@@ -108,7 +108,7 @@ class AlertCheckReceiver : BroadcastReceiver() {
         private fun notifyAlert(context: Context, alert: JSONObject, price: Double, target: Double) {
             createChannel(context)
             val nm = context.getSystemService(Context.NOTIFICATION_SERVICE) as? NotificationManager ?: return
-            val open = Intent(context, MainActivity::class.java).apply {
+            val open = Intent(context, MainActivityV4::class.java).apply {
                 flags = Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP
             }
             val content = PendingIntent.getActivity(context, 5101, open, PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE)
@@ -120,10 +120,10 @@ class AlertCheckReceiver : BroadcastReceiver() {
                 Notification.Builder(context, CHANNEL_ID)
             } else {
                 @Suppress("DEPRECATION") Notification.Builder(context)
-            }.setSmallIcon(android.R.drawable.ic_dialog_info)
+            }.setSmallIcon(R.drawable.app_icon)
                 .setContentTitle(title)
                 .setContentText(msg)
-                .setStyle(Notification.BigTextStyle().bigText("$msg\nOuvre CHK Crypto Workspace pour revoir la situation avant de décider."))
+                .setStyle(Notification.BigTextStyle().bigText("$msg\nOuvre CHK Crypto pour revoir la situation avant de décider."))
                 .setContentIntent(content)
                 .setAutoCancel(true)
                 .setPriority(Notification.PRIORITY_HIGH)
