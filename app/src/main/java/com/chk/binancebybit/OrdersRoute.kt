@@ -111,7 +111,7 @@ object OrdersRoute {
             val surface = Color.rgb(20, 23, 28)
             val surface2 = Color.rgb(28, 32, 38)
             val border = Color.rgb(48, 54, 64)
-            val text = Color.rgb(246, 247, 249)
+            val textColor = Color.rgb(246, 247, 249)
             val muted = Color.rgb(153, 162, 174)
             val orange = Color.rgb(245, 142, 30)
             val yellow = Color.rgb(240, 185, 11)
@@ -132,7 +132,7 @@ object OrdersRoute {
                 isAllCaps = false
                 textSize = 13f
                 setTypeface(Typeface.DEFAULT, Typeface.BOLD)
-                setTextColor(if (primary) Color.BLACK else text)
+                setTextColor(if (primary) Color.BLACK else textColor)
                 background = rounded(if (primary) accent else surface2, if (primary) Color.TRANSPARENT else border)
                 setOnClickListener { run() }
                 layoutParams = LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(52)).apply { setMargins(0, dp(4), 0, dp(6)) }
@@ -146,10 +146,10 @@ object OrdersRoute {
                 layoutParams = LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply { setMargins(0, 0, 0, dp(8)) }
                 addView(LinearLayout(activity).apply {
                     orientation = LinearLayout.VERTICAL
-                    addView(TextView(activity).apply { text = title; textSize = 14f; setTextColor(text); setTypeface(Typeface.DEFAULT, Typeface.BOLD) })
-                    addView(TextView(activity).apply { text = desc; textSize = 11f; setTextColor(muted) })
+                    addView(TextView(activity).apply { this.text = title; textSize = 14f; setTextColor(textColor); setTypeface(Typeface.DEFAULT, Typeface.BOLD) })
+                    addView(TextView(activity).apply { this.text = desc; textSize = 11f; setTextColor(muted) })
                 }, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
-                addView(TextView(activity).apply { text = status; textSize = 10f; setTypeface(Typeface.DEFAULT, Typeface.BOLD); setTextColor(green) })
+                addView(TextView(activity).apply { this.text = status; textSize = 10f; setTypeface(Typeface.DEFAULT, Typeface.BOLD); setTextColor(green) })
             }
 
             val page = LinearLayout(activity).apply {
@@ -158,13 +158,13 @@ object OrdersRoute {
                 setBackgroundColor(bg)
             }
             page.addView(TextView(activity).apply {
-                text = "Réglages ${if (exchange == "BINANCE") "Binance" else "Bybit"}"
+                this.text = "Réglages ${if (exchange == "BINANCE") "Binance" else "Bybit"}"
                 textSize = 24f
-                setTextColor(text)
+                setTextColor(textColor)
                 setTypeface(Typeface.DEFAULT, Typeface.BOLD)
             })
             page.addView(TextView(activity).apply {
-                text = "Connexion permanente via Render"
+                this.text = "Connexion permanente via Render"
                 textSize = 12f
                 setTextColor(muted)
                 setPadding(0, dp(3), 0, dp(14))
