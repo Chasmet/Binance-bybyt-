@@ -28,20 +28,23 @@ class MainActivity : Activity() {
     private var exchange = "BINANCE"
     private var section = "PORTFOLIO"
 
-    private val bg = Color.rgb(10, 10, 12)
-    private val card = Color.rgb(25, 26, 30)
-    private val card2 = Color.rgb(34, 35, 40)
-    private val text = Color.rgb(245, 245, 247)
-    private val muted = Color.rgb(165, 165, 175)
-    private val yellow = Color.rgb(240, 185, 11)
-    private val orange = Color.rgb(245, 142, 30)
-    private val green = Color.rgb(35, 190, 120)
+    private val bgColor = Color.rgb(10, 10, 12)
+    private val cardColor = Color.rgb(25, 26, 30)
+    private val card2Color = Color.rgb(34, 35, 40)
+    private val fgColor = Color.rgb(245, 245, 247)
+    private val mutedColor = Color.rgb(165, 165, 175)
+    private val yellowColor = Color.rgb(240, 185, 11)
+    private val orangeColor = Color.rgb(245, 142, 30)
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         secureStore = SecureStore(this)
-        window.statusBarColor = bg
-        window.navigationBarColor = bg
+        window.statusBarColor = bgColor
+        window.navigationBarColor = bgColor
+        rebuildUi()
+    }
+
+    private fun rebuildUi() {
         setContentView(buildRoot())
         render()
     }
@@ -49,13 +52,13 @@ class MainActivity : Activity() {
     private fun buildRoot(): View {
         val root = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
-            setBackgroundColor(bg)
+            setBackgroundColor(bgColor)
             setPadding(dp(14), dp(12), dp(14), dp(10))
         }
 
         root.addView(TextView(this).apply {
             text = "CHK Crypto Workspace"
-            setTextColor(text)
+            setTextColor(fgColor)
             textSize = 24f
             setTypeface(typeface, android.graphics.Typeface.BOLD)
             setPadding(dp(4), dp(6), 0, dp(12))
@@ -65,8 +68,8 @@ class MainActivity : Activity() {
             orientation = LinearLayout.HORIZONTAL
             gravity = Gravity.CENTER
         }
-        exchangeBar.addView(exchangeButton("BINANCE", "Binance"), weightParams())
-        exchangeBar.addView(exchangeButton("BYBIT", "Bybit"), weightParams())
+        exchangeBar.addView(exchangeButton("BINANCE", "Binance"), weightFullParams())
+        exchangeBar.addView(exchangeButton("BYBIT", "Bybit"), weightFullParams())
         root.addView(exchangeBar, ViewGroup.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(52)))
 
         content = FrameLayout(this)
@@ -77,23 +80,28 @@ class MainActivity : Activity() {
             gravity = Gravity.CENTER
             setPadding(0, dp(6), 0, 0)
         }
-        nav.addView(navButton("PORTFOLIO", "Portefeuille"), weightParams())
-        nav.addView(navButton("HISTORY", "Historique"), weightParams())
-        nav.addView(navButton("NOTES", "Notes"), weightParams())
-        nav.addView(navButton("SETTINGS", "Réglages"), weightParams())
+        nav.addView(navButton("PORTFOLIO", "Portefeuille"), weightFullParams())
+        nav.addView(navButton("HISTORY", "Historique"), weightFullParams())
+        nav.addView(navButton("NOTES", "Notes"), weightFullParams())
+        nav.addView(navButton("SETTINGS", "Réglages"), weightFullParams())
         root.addView(nav, ViewGroup.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(62)))
         return root
     }
 
     private fun exchangeButton(code: String, label: String): Button = Button(this).apply {
         text = label
-        setTextColor(text)
+        setTextColor(if (exchange == code) Color.BLACK else fgColor)
         textSize = 16f
-        setBackgroundColor(if (exchange == code) if (code == "BINANCE") yellow else orange else card2)
+        isAllCaps = false
+        setBackgroundColor(
+            if (exchange == code) {
+                if (code == "BINANCE") yellowColor else orangeColor
+            } else card2Color
+        )
         setOnClickListener {
             exchange = code
-            setContentView(buildRoot())
-            render()
+            section = "PORTFOLIO"
+            rebuildUi()
         }
     }
 
@@ -101,13 +109,12 @@ class MainActivity : Activity() {
         text = label
         textSize = 11f
         isAllCaps = false
-        setTextColor(if (section == code) text else muted)
-        setBackgroundColor(if (section == code) card2 else bg)
+        setTextColor(if (section == code) fgColor else mutedColor)
+        setBackgroundColor(if (section == code) card2Color else bgColor)
         setPadding(1, 1, 1, 1)
         setOnClickListener {
             section = code
-            setContentView(buildRoot())
-            render()
+            rebuildUi()
         }
     }
 
@@ -122,16 +129,16 @@ class MainActivity : Activity() {
     }
 
     private fun renderPortfolio() {
+        val page = pageLayout()
+
         if (exchange == "BYBIT") {
-            content.addView(scrollPage().apply {
-                addView(title("Bybit"))
-                addView(infoCard("Connecteur Bybit", "Onglet prêt. La connexion API Bybit sera ajoutée après validation de la partie Binance."))
-                addView(infoCard("Objectif", "Portefeuille • historique • prix moyen • alertes • notes CHK, dans la même application."))
-            })
+            page.addView(title("Bybit"))
+            page.addView(infoCard("Connecteur Bybit", "Onglet prêt. La connexion API Bybit sera ajoutée après validation de la partie Binance."))
+            page.addView(infoCard("Objectif", "Portefeuille • historique • prix moyen • alertes • notes CHK, dans la même application."))
+            attachPage(page)
             return
         }
 
-        val page = scrollPage()
         page.addView(title("Binance"))
         val cached = loadCachedSnapshot()
         if (cached == null) {
@@ -142,7 +149,7 @@ class MainActivity : Activity() {
         }
         page.addView(primaryButton("Synchroniser Binance") { syncPortfolio() })
         page.addView(smallText("Lecture seule. L'application ne contient aucune fonction de retrait ou d'envoi d'ordre Binance."))
-        content.addView(page)
+        attachPage(page)
     }
 
     private fun portfolioHeader(snapshot: PortfolioSnapshot): View {
@@ -160,13 +167,13 @@ class MainActivity : Activity() {
         row.addView(TextView(this@MainActivity).apply {
             text = h.asset
             textSize = 18f
-            setTextColor(text)
+            setTextColor(fgColor)
             setTypeface(typeface, android.graphics.Typeface.BOLD)
         }, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
         row.addView(TextView(this@MainActivity).apply {
             text = "${BinanceClient.fmt(h.valueUsdt)} USDT"
             textSize = 16f
-            setTextColor(text)
+            setTextColor(fgColor)
             gravity = Gravity.END
         })
         addView(row)
@@ -174,25 +181,27 @@ class MainActivity : Activity() {
     }
 
     private fun renderHistory() {
+        val page = pageLayout()
+
         if (exchange == "BYBIT") {
-            content.addView(scrollPage().apply {
-                addView(title("Historique Bybit"))
-                addView(infoCard("À venir", "Le connecteur Bybit sera branché dans cette section."))
-            })
+            page.addView(title("Historique Bybit"))
+            page.addView(infoCard("À venir", "Le connecteur Bybit sera branché dans cette section."))
+            attachPage(page)
             return
         }
 
-        val page = scrollPage()
         page.addView(title("Historique Spot Binance"))
         page.addView(smallText("Entre une paire Binance, par exemple RENDERUSDT, FETUSDT ou LINKUSDT."))
         val symbol = input("RENDERUSDT", false)
         page.addView(symbol)
+
         val result = TextView(this).apply {
-            setTextColor(text)
+            setTextColor(fgColor)
             textSize = 14f
             setPadding(dp(10), dp(16), dp(10), dp(16))
             setTextIsSelectable(true)
         }
+
         page.addView(primaryButton("Charger l'historique") {
             val s = symbol.text.toString().trim().uppercase(Locale.US)
             if (s.isBlank()) return@primaryButton
@@ -207,20 +216,20 @@ class MainActivity : Activity() {
             )
         })
         page.addView(result)
-        content.addView(page)
+        attachPage(page)
     }
 
     private fun renderNotes() {
-        val page = scrollPage()
+        val page = pageLayout()
         page.addView(title("Bloc-notes CHK"))
         page.addView(smallText("Notes locales sur ton téléphone : ordres envisagés, niveaux, alertes, analyses. Rien n'est publié sur GitHub."))
 
         val notes = EditText(this).apply {
             setText(prefs.getString("notes", ""))
             hint = "Exemple : RENDER — surveiller 1,30 USDC…"
-            setHintTextColor(muted)
-            setTextColor(text)
-            setBackgroundColor(card)
+            setHintTextColor(mutedColor)
+            setTextColor(fgColor)
+            setBackgroundColor(cardColor)
             gravity = Gravity.TOP
             minLines = 14
             inputType = InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_FLAG_MULTI_LINE or InputType.TYPE_TEXT_FLAG_CAP_SENTENCES
@@ -231,9 +240,9 @@ class MainActivity : Activity() {
         })
 
         val quick = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
-        quick.addView(secondaryButton("ACHAT") { appendNote(notes, "\nACHAT — ") }, weightParams())
-        quick.addView(secondaryButton("VENTE") { appendNote(notes, "\nVENTE — ") }, weightParams())
-        quick.addView(secondaryButton("ALERTE") { appendNote(notes, "\nALERTE — ") }, weightParams())
+        quick.addView(secondaryButton("ACHAT") { appendNote(notes, "\nACHAT — ") }, weightWrapParams())
+        quick.addView(secondaryButton("VENTE") { appendNote(notes, "\nVENTE — ") }, weightWrapParams())
+        quick.addView(secondaryButton("ALERTE") { appendNote(notes, "\nALERTE — ") }, weightWrapParams())
         page.addView(quick)
 
         page.addView(primaryButton("Enregistrer les notes") {
@@ -241,7 +250,7 @@ class MainActivity : Activity() {
             Toast.makeText(this, "Notes enregistrées", Toast.LENGTH_SHORT).show()
         })
         page.addView(infoCard("Synchronisation assistant", "La base du bloc-notes est prête. Pour que ChatGPT écrive directement dedans à distance, on branchera ensuite un stockage privé plutôt que ce dépôt GitHub public."))
-        content.addView(page)
+        attachPage(page)
     }
 
     private fun appendNote(edit: EditText, prefix: String) {
@@ -251,12 +260,12 @@ class MainActivity : Activity() {
     }
 
     private fun renderSettings() {
-        val page = scrollPage()
+        val page = pageLayout()
         page.addView(title(if (exchange == "BINANCE") "Réglages Binance" else "Réglages Bybit"))
 
         if (exchange == "BYBIT") {
             page.addView(infoCard("Connecteur Bybit", "Les champs API Bybit seront ajoutés à l'étape suivante. Le code est volontairement désactivé pour le moment."))
-            content.addView(page)
+            attachPage(page)
             return
         }
 
@@ -265,18 +274,20 @@ class MainActivity : Activity() {
         val secret = input("Secret API Binance", true).apply { setText(secureStore.get("binance_api_secret")) }
         page.addView(key)
         page.addView(secret)
+
         page.addView(primaryButton("Enregistrer") {
             secureStore.put("binance_api_key", key.text.toString().trim())
             secureStore.put("binance_api_secret", secret.text.toString().trim())
             Toast.makeText(this, "Clés enregistrées sur le téléphone", Toast.LENGTH_SHORT).show()
         })
+
         page.addView(secondaryButton("Tester et synchroniser") {
             secureStore.put("binance_api_key", key.text.toString().trim())
             secureStore.put("binance_api_secret", secret.text.toString().trim())
             syncPortfolio()
         })
         page.addView(smallText("Aucune clé API n'est écrite dans le dépôt GitHub ni dans l'APK."))
-        content.addView(page)
+        attachPage(page)
     }
 
     private fun syncPortfolio() {
@@ -286,8 +297,7 @@ class MainActivity : Activity() {
             success = {
                 saveCachedSnapshot(it)
                 section = "PORTFOLIO"
-                setContentView(buildRoot())
-                render()
+                rebuildUi()
                 Toast.makeText(this, "Binance synchronisé", Toast.LENGTH_SHORT).show()
             },
             failure = { Toast.makeText(this, "Erreur Binance : $it", Toast.LENGTH_LONG).show() }
@@ -297,7 +307,9 @@ class MainActivity : Activity() {
     private fun clientOrThrow(): BinanceClient {
         val key = secureStore.get("binance_api_key")
         val secret = secureStore.get("binance_api_secret")
-        if (key.isBlank() || secret.isBlank()) throw IllegalStateException("Configure d'abord la clé API dans Réglages.")
+        if (key.isBlank() || secret.isBlank()) {
+            throw IllegalStateException("Configure d'abord la clé API dans Réglages.")
+        }
         return BinanceClient(key, secret)
     }
 
@@ -330,18 +342,18 @@ class MainActivity : Activity() {
             for (i in 0 until arr.length()) {
                 val h = arr.getJSONObject(i)
                 holdings += Holding(
-                    h.getString("asset"),
-                    h.getDouble("amount"),
-                    h.getDouble("priceUsdt"),
-                    h.getDouble("valueUsdt")
+                    asset = h.getString("asset"),
+                    amount = h.getDouble("amount"),
+                    priceUsdt = h.getDouble("priceUsdt"),
+                    valueUsdt = h.getDouble("valueUsdt")
                 )
             }
             PortfolioSnapshot(
-                obj.getLong("capturedAt"),
-                obj.getDouble("totalUsdt"),
-                obj.getDouble("totalEur"),
-                obj.getDouble("eurUsdt"),
-                holdings
+                capturedAt = obj.getLong("capturedAt"),
+                totalUsdt = obj.getDouble("totalUsdt"),
+                totalEur = obj.getDouble("totalEur"),
+                eurUsdt = obj.getDouble("eurUsdt"),
+                holdings = holdings
             )
         }.getOrNull()
     }
@@ -357,32 +369,22 @@ class MainActivity : Activity() {
         }.start()
     }
 
-    private fun scrollPage(): LinearLayout {
-        val inner = LinearLayout(this).apply {
-            orientation = LinearLayout.VERTICAL
-            setPadding(dp(2), dp(12), dp(2), dp(20))
-        }
-        val scroll = ScrollView(this).apply {
-            isFillViewport = true
-            addView(inner)
-        }
-        content.post {
-            if (scroll.parent == null) {
-                // Le ScrollView est ajouté par wrapPage quand nécessaire.
-            }
-        }
-        return inner.also { it.tag = scroll }
+    private fun pageLayout() = LinearLayout(this).apply {
+        orientation = LinearLayout.VERTICAL
+        setPadding(dp(2), dp(12), dp(2), dp(20))
     }
 
-    private fun FrameLayout.addView(page: LinearLayout) {
-        val scroll = page.tag as? ScrollView
-        if (scroll != null) super.addView(scroll, FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT))
-        else super.addView(page)
+    private fun attachPage(page: LinearLayout) {
+        val scroll = ScrollView(this).apply {
+            isFillViewport = true
+            addView(page, ScrollView.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT))
+        }
+        content.addView(scroll, FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT))
     }
 
     private fun title(value: String) = TextView(this).apply {
         text = value
-        setTextColor(text)
+        setTextColor(fgColor)
         textSize = 22f
         setTypeface(typeface, android.graphics.Typeface.BOLD)
         setPadding(dp(6), dp(4), 0, dp(12))
@@ -390,13 +392,13 @@ class MainActivity : Activity() {
 
     private fun label(value: String) = TextView(this).apply {
         text = value
-        setTextColor(muted)
+        setTextColor(mutedColor)
         textSize = 13f
     }
 
     private fun bigValue(value: String) = TextView(this).apply {
         text = value
-        setTextColor(text)
+        setTextColor(fgColor)
         textSize = 30f
         setTypeface(typeface, android.graphics.Typeface.BOLD)
         setPadding(0, dp(4), 0, dp(4))
@@ -404,14 +406,14 @@ class MainActivity : Activity() {
 
     private fun smallText(value: String) = TextView(this).apply {
         text = value
-        setTextColor(muted)
+        setTextColor(mutedColor)
         textSize = 13f
         setPadding(dp(4), dp(5), dp(4), dp(5))
     }
 
     private fun cardLayout() = LinearLayout(this).apply {
         orientation = LinearLayout.VERTICAL
-        setBackgroundColor(card)
+        setBackgroundColor(cardColor)
         setPadding(dp(16), dp(14), dp(16), dp(14))
         layoutParams = LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply {
             setMargins(0, 0, 0, dp(10))
@@ -421,7 +423,7 @@ class MainActivity : Activity() {
     private fun infoCard(head: String, body: String): View = cardLayout().apply {
         addView(TextView(this@MainActivity).apply {
             text = head
-            setTextColor(text)
+            setTextColor(fgColor)
             textSize = 17f
             setTypeface(typeface, android.graphics.Typeface.BOLD)
         })
@@ -430,9 +432,9 @@ class MainActivity : Activity() {
 
     private fun input(hintValue: String, secret: Boolean): EditText = EditText(this).apply {
         hint = hintValue
-        setHintTextColor(muted)
-        setTextColor(text)
-        setBackgroundColor(card)
+        setHintTextColor(mutedColor)
+        setTextColor(fgColor)
+        setBackgroundColor(cardColor)
         textSize = 15f
         singleLine = true
         setPadding(dp(14), dp(12), dp(14), dp(12))
@@ -447,7 +449,7 @@ class MainActivity : Activity() {
         isAllCaps = false
         textSize = 16f
         setTextColor(Color.BLACK)
-        setBackgroundColor(if (exchange == "BINANCE") yellow else orange)
+        setBackgroundColor(if (exchange == "BINANCE") yellowColor else orangeColor)
         setOnClickListener { click() }
         layoutParams = LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(56)).apply {
             setMargins(0, dp(8), 0, dp(8))
@@ -458,12 +460,19 @@ class MainActivity : Activity() {
         text = label
         isAllCaps = false
         textSize = 13f
-        setTextColor(text)
-        setBackgroundColor(card2)
+        setTextColor(fgColor)
+        setBackgroundColor(card2Color)
         setOnClickListener { click() }
+        layoutParams = LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(50)).apply {
+            setMargins(0, dp(6), 0, dp(6))
+        }
     }
 
-    private fun weightParams() = LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.MATCH_PARENT, 1f).apply {
+    private fun weightFullParams() = LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.MATCH_PARENT, 1f).apply {
+        setMargins(dp(2), dp(2), dp(2), dp(2))
+    }
+
+    private fun weightWrapParams() = LinearLayout.LayoutParams(0, dp(48), 1f).apply {
         setMargins(dp(2), dp(2), dp(2), dp(2))
     }
 
