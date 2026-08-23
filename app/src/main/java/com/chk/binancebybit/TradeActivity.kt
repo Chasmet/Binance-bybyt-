@@ -230,9 +230,13 @@ class TradeActivity : Activity() {
                 result
             },
             success = { result ->
-                val filled = result.orderStatus.equals("Filled", true)
+                val title = when {
+                    result.orderStatus.equals("Filled", true) -> "Ordre exécuté"
+                    result.orderStatus.equals("New", true) -> "Ordre ouvert"
+                    else -> "Ordre envoyé"
+                }
                 AlertDialog.Builder(this)
-                    .setTitle(if (filled) "Ordre exécuté" else "Ordre envoyé")
+                    .setTitle(title)
                     .setMessage(executionNote(p, result))
                     .setPositiveButton("OK") { _, _ -> reload() }
                     .show()
@@ -285,6 +289,7 @@ class TradeActivity : Activity() {
             append("$action CONFIRMÉ — ${p.symbol}\n")
             append("Type : ${p.orderType}\n")
             if (p.side == "SELL") append("Quantité demandée : ${fmt(p.baseQuantity ?: 0.0)} $base\n")
+            if (p.side == "BUY" && p.baseQuantity != null) append("Quantité demandée : ${fmt(p.baseQuantity)} $base\n")
             append("Montant cible : ${fmt(p.quoteAmountUsdc)} USDC\n")
             if (p.limitPrice != null) append("Prix LIMIT : ${fmt(p.limitPrice)} USDC\n")
             if (result.executedQty > 0.0) append("Quantité exécutée : ${fmt(result.executedQty)} $base\n")
@@ -297,30 +302,79 @@ class TradeActivity : Activity() {
     }
 
     private fun recentCard(o: JSONObject): View {
+        val id = o.optString("id")
         val side = o.optString("side", "BUY").uppercase()
         val symbol = o.optString("symbol")
         val status = o.optString("status")
         val result = o.optJSONObject("result")
         val bybitStatus = result?.optString("orderStatus").orEmpty()
         val errorMessage = result?.optString("error").orEmpty()
+        val openBybit = bybitStatus.equals("New", true) ||
+            bybitStatus.equals("PartiallyFilled", true) ||
+            bybitStatus.equals("Untriggered", true)
+        val displayStatus = when {
+            openBybit -> "OUVERT"
+            status.equals("executed", true) && bybitStatus.equals("Filled", true) -> "EXÉCUTÉ"
+            status.equals("executed", true) -> "ENVOYÉ"
+            status.equals("rejected", true) -> "ANNULÉ"
+            status.equals("error", true) -> "ERREUR"
+            status.equals("expired", true) -> "EXPIRÉ"
+            else -> status.uppercase()
+        }
+
         return card().apply {
             addView(headerRow(side, symbol, o.optString("order_type")))
             addView(TextView(this@TradeActivity).apply {
                 text = buildString {
-                    append("Statut : ${status.uppercase()}")
+                    append("Statut : $displayStatus")
                     if (bybitStatus.isNotBlank()) append(" • Bybit $bybitStatus")
                     append("\nMontant cible : ${fmt(o.optDouble("quote_amount_usdc", 0.0))} USDC")
                     if (!o.isNull("base_quantity")) append("\nQuantité : ${fmt(o.optDouble("base_quantity"))} ${symbol.removeSuffix("USDC")}")
                     if (!o.isNull("limit_price")) append("\nPrix : ${fmt(o.optDouble("limit_price"))} USDC")
                 }
                 textSize = 13f
-                setTextColor(if (status.equals("error", true)) red else muted)
+                setTextColor(when {
+                    status.equals("error", true) -> red
+                    openBybit -> orange
+                    else -> muted
+                })
                 setPadding(0, dp(10), 0, 0)
             })
             if (errorMessage.isNotBlank()) {
                 addView(infoBanner("Pourquoi l'ordre a été refusé", errorMessage, red))
             }
+            if (id.isNotBlank() && !openBybit) {
+                addView(Button(this@TradeActivity).apply {
+                    text = "SUPPRIMER DE L'HISTORIQUE"
+                    isAllCaps = true
+                    textSize = 11f
+                    setTypeface(Typeface.DEFAULT, Typeface.BOLD)
+                    setTextColor(red)
+                    background = rounded(surface2, red, 14)
+                    setOnClickListener { deleteHistory(id, symbol) }
+                }, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(48)).apply {
+                    setMargins(0, dp(8), 0, 0)
+                })
+            }
         }
+    }
+
+    private fun deleteHistory(id: String, symbol: String) {
+        AlertDialog.Builder(this)
+            .setTitle("Supprimer de l'historique ?")
+            .setMessage("Supprimer cette ligne $symbol de l'historique CHK Crypto ? Cela ne modifie aucun ordre Bybit.")
+            .setNegativeButton("Retour", null)
+            .setPositiveButton("SUPPRIMER") { _, _ ->
+                runAsync(
+                    task = { proposalClient.deleteHistory(id) },
+                    success = {
+                        Toast.makeText(this, "Ligne supprimée", Toast.LENGTH_SHORT).show()
+                        reload()
+                    },
+                    failure = { Toast.makeText(this, it, Toast.LENGTH_LONG).show() }
+                )
+            }
+            .show()
     }
 
     private fun headerRow(side: String, symbol: String, type: String): View = LinearLayout(this).apply {
