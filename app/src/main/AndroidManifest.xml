@@ -13,7 +13,7 @@
         android:usesCleartextTraffic="false">
 
         <activity
-            android:name=".TradeActivity"
+            android:name=".MainActivityV4"
             android:exported="true"
             android:screenOrientation="portrait">
             <intent-filter>
@@ -23,9 +23,10 @@
         </activity>
 
         <activity
-            android:name=".MainActivityV4"
+            android:name=".TradeActivity"
             android:exported="false"
             android:screenOrientation="portrait" />
+
         <activity android:name=".MainActivity" android:exported="false" />
 
         <receiver android:name=".AlertCheckReceiver" android:exported="false" />
