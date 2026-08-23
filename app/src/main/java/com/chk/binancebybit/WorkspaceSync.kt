@@ -31,10 +31,27 @@ class WorkspaceSync(private val context: Context, private val secureStore: Secur
             put("deviceId", identity.deviceId)
             put("deviceSecret", identity.deviceSecret)
             put("accountFingerprint", sha256(apiKey))
-            put("appVersion", "combined-v0.2")
+            put("appVersion", "combined-v0.3")
             put("snapshot", snapshot)
         }
-        val response = postJson(SYNC_URL, body)
+        val response = postJson(BINANCE_SYNC_URL, body)
+        runCatching { syncGeneric("BINANCE", apiKey, snapshot) }
+        return JSONObject(response).optString("syncedAt", "OK")
+    }
+
+    fun syncBybit(apiKey: String, snapshot: JSONObject): String = syncGeneric("BYBIT", apiKey, snapshot)
+
+    private fun syncGeneric(exchange: String, apiKey: String, snapshot: JSONObject): String {
+        val identity = ensureIdentity()
+        val body = JSONObject().apply {
+            put("deviceId", identity.deviceId)
+            put("deviceSecret", identity.deviceSecret)
+            put("exchange", exchange)
+            put("accountFingerprint", sha256(apiKey))
+            put("appVersion", "combined-v0.3")
+            put("snapshot", snapshot)
+        }
+        val response = postJson(CRYPTO_SYNC_URL, body)
         return JSONObject(response).optString("syncedAt", "OK")
     }
 
@@ -105,7 +122,8 @@ class WorkspaceSync(private val context: Context, private val secureStore: Secur
     }
 
     companion object {
-        const val SYNC_URL = "https://gflnvlolwqnvzxyqsrir.supabase.co/functions/v1/chk-binance-sync"
+        const val BINANCE_SYNC_URL = "https://gflnvlolwqnvzxyqsrir.supabase.co/functions/v1/chk-binance-sync"
+        const val CRYPTO_SYNC_URL = "https://gflnvlolwqnvzxyqsrir.supabase.co/functions/v1/chk-crypto-sync"
         const val ALERTS_URL = "https://gflnvlolwqnvzxyqsrir.supabase.co/functions/v1/chk-binance-alerts"
         const val NOTES_URL = "https://gflnvlolwqnvzxyqsrir.supabase.co/functions/v1/chk-crypto-notes"
     }
