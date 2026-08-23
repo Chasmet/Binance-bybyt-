@@ -31,7 +31,7 @@ class WorkspaceSync(private val context: Context, private val secureStore: Secur
             put("deviceId", identity.deviceId)
             put("deviceSecret", identity.deviceSecret)
             put("accountFingerprint", sha256(apiKey))
-            put("appVersion", "combined-v0.3")
+            put("appVersion", "combined-v0.4.2")
             put("snapshot", snapshot)
         }
         val response = postJson(BINANCE_SYNC_URL, body)
@@ -48,11 +48,23 @@ class WorkspaceSync(private val context: Context, private val secureStore: Secur
             put("deviceSecret", identity.deviceSecret)
             put("exchange", exchange)
             put("accountFingerprint", sha256(apiKey))
-            put("appVersion", "combined-v0.3")
+            put("appVersion", "combined-v0.4.2")
             put("snapshot", snapshot)
         }
         val response = postJson(CRYPTO_SYNC_URL, body)
         return JSONObject(response).optString("syncedAt", "OK")
+    }
+
+    fun pairBybit(apiKey: String, apiSecret: String): String {
+        require(apiKey.isNotBlank() && apiSecret.isNotBlank()) { "Clés Bybit manquantes" }
+        val identity = ensureIdentity()
+        val body = JSONObject().apply {
+            put("deviceId", identity.deviceId)
+            put("deviceSecret", identity.deviceSecret)
+            put("apiKey", apiKey)
+            put("apiSecret", apiSecret)
+        }
+        return postJson(BYBIT_PAIR_URL, body)
     }
 
     fun listNotes(): String {
@@ -93,7 +105,7 @@ class WorkspaceSync(private val context: Context, private val secureStore: Secur
             requestMethod = "POST"
             doOutput = true
             connectTimeout = 10000
-            readTimeout = 15000
+            readTimeout = 20000
             setRequestProperty("Content-Type", "application/json")
             setRequestProperty("Accept", "application/json")
         }
@@ -126,5 +138,6 @@ class WorkspaceSync(private val context: Context, private val secureStore: Secur
         const val CRYPTO_SYNC_URL = "https://gflnvlolwqnvzxyqsrir.supabase.co/functions/v1/chk-crypto-sync"
         const val ALERTS_URL = "https://gflnvlolwqnvzxyqsrir.supabase.co/functions/v1/chk-binance-alerts"
         const val NOTES_URL = "https://gflnvlolwqnvzxyqsrir.supabase.co/functions/v1/chk-crypto-notes"
+        const val BYBIT_PAIR_URL = "https://chk-binance-workspace-mcp.onrender.com/pair/bybit"
     }
 }
