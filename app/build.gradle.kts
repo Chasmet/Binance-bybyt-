@@ -3,6 +3,17 @@ plugins {
     id("org.jetbrains.kotlin.android")
 }
 
+val stableKeystorePath = providers.environmentVariable("CHK_KEYSTORE_PATH").orNull
+val stableStorePassword = providers.environmentVariable("CHK_KEYSTORE_PASSWORD").orNull
+val stableKeyAlias = providers.environmentVariable("CHK_KEY_ALIAS").orNull
+val stableKeyPassword = providers.environmentVariable("CHK_KEY_PASSWORD").orNull
+val stableSigningConfigured = listOf(
+    stableKeystorePath,
+    stableStorePassword,
+    stableKeyAlias,
+    stableKeyPassword
+).all { !it.isNullOrBlank() }
+
 android {
     namespace = "com.chk.binancebybit"
     compileSdk = 35
@@ -11,13 +22,25 @@ android {
         applicationId = "com.chk.binancebybit"
         minSdk = 26
         targetSdk = 35
-        versionCode = 13
-        versionName = "0.5.4"
+        versionCode = 14
+        versionName = "0.5.5"
+    }
+
+    signingConfigs {
+        if (stableSigningConfigured) {
+            create("stableRelease") {
+                storeFile = rootProject.file(stableKeystorePath!!)
+                storePassword = stableStorePassword
+                keyAlias = stableKeyAlias
+                keyPassword = stableKeyPassword
+            }
+        }
     }
 
     buildTypes {
         release {
             isMinifyEnabled = false
+            signingConfig = signingConfigs.findByName("stableRelease")
         }
     }
 
