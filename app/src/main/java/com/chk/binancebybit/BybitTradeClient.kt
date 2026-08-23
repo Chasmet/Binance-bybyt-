@@ -25,8 +25,8 @@ class BybitTradeClient(
         require(proposal.symbol.matches(Regex("^[A-Z0-9]{2,20}USDC$"))) { "Seules les paires Spot */USDC sont autorisées" }
         require(proposal.side == "BUY" || proposal.side == "SELL") { "Sens d'ordre invalide" }
         require(proposal.orderType == "MARKET" || proposal.orderType == "LIMIT") { "Type d'ordre invalide" }
-        require(proposal.quoteAmountUsdc > 0.0 && proposal.quoteAmountUsdc <= MAX_ORDER_USDC + 1e-9) {
-            "Montant hors plafond de sécurité (${MAX_ORDER_USDC.toInt()} USDC)"
+        require(proposal.quoteAmountUsdc > MIN_ORDER_USDC && proposal.quoteAmountUsdc <= MAX_ORDER_USDC + 1e-9) {
+            "Montant autorisé : plus de ${fmt(MIN_ORDER_USDC)} USDC et au maximum ${MAX_ORDER_USDC.toInt()} USDC"
         }
 
         syncServerTime()
@@ -35,7 +35,6 @@ class BybitTradeClient(
         val instrument = instrumentInfo(proposal.symbol)
         val qtyStep = instrument.optJSONObject("lotSizeFilter")?.optString("qtyStep", "0") ?: "0"
         val minOrderQty = instrument.optJSONObject("lotSizeFilter")?.optString("minOrderQty", "0")?.toDoubleOrNull() ?: 0.0
-        val minOrderAmt = instrument.optJSONObject("lotSizeFilter")?.optString("minOrderAmt", "0")?.toDoubleOrNull() ?: 0.0
         val tickSize = instrument.optJSONObject("priceFilter")?.optString("tickSize", "0") ?: "0"
         val baseAsset = proposal.baseAsset
         val balances = walletBalances()
@@ -59,9 +58,7 @@ class BybitTradeClient(
             if (availableUsdc + 1e-9 < proposal.quoteAmountUsdc) {
                 throw IllegalStateException("Solde USDC insuffisant : ${fmt(availableUsdc)} USDC disponibles")
             }
-            if (minOrderAmt > 0.0 && proposal.quoteAmountUsdc + 1e-9 < minOrderAmt) {
-                throw IllegalStateException("Montant inférieur au minimum Bybit : $minOrderAmt USDC")
-            }
+            ensureObservedUiMinimum(proposal.quoteAmountUsdc)
             requestedQty = decimal(proposal.quoteAmountUsdc)
             body.put("qty", requestedQty)
             body.put("marketUnit", "quoteCoin")
@@ -96,9 +93,7 @@ class BybitTradeClient(
                 if (estimatedNotional > MAX_ORDER_USDC + 1e-9) {
                     throw IllegalStateException("Valeur de vente estimée ${fmt(estimatedNotional)} USDC > plafond ${MAX_ORDER_USDC.toInt()} USDC")
                 }
-                if (minOrderAmt > 0.0 && estimatedNotional + 1e-9 < minOrderAmt) {
-                    throw IllegalStateException("Valeur de vente sous le minimum Bybit : $minOrderAmt USDC")
-                }
+                ensureObservedUiMinimum(estimatedNotional)
                 body.put("qty", requestedQty)
                 body.put("marketUnit", "baseCoin")
                 body.put("timeInForce", "IOC")
@@ -111,9 +106,7 @@ class BybitTradeClient(
                 if (estimatedNotional > MAX_ORDER_USDC + 1e-9) {
                     throw IllegalStateException("Valeur LIMIT ${fmt(estimatedNotional)} USDC > plafond ${MAX_ORDER_USDC.toInt()} USDC")
                 }
-                if (minOrderAmt > 0.0 && estimatedNotional + 1e-9 < minOrderAmt) {
-                    throw IllegalStateException("Ordre sous le minimum Bybit : $minOrderAmt USDC")
-                }
+                ensureObservedUiMinimum(estimatedNotional)
                 if (proposal.side == "BUY") {
                     val availableUsdc = usableBalance(balances.optJSONObject("USDC"))
                     if (availableUsdc + 1e-9 < estimatedNotional) {
@@ -126,6 +119,9 @@ class BybitTradeClient(
             }
         }
 
+        // Ne bloque pas localement avec lotSizeFilter.minOrderAmt : la vidéo Bybit EU
+        // montre que RENDER/USDC accepte la saisie au-dessus de 1 USDC. L'API Bybit
+        // reste l'autorité finale et renverra son erreur réelle si une paire impose plus.
         val created = signedPost("/v5/order/create", body)
         val orderId = created.optJSONObject("result")?.optString("orderId").orEmpty()
         val linkId = created.optJSONObject("result")?.optString("orderLinkId").takeUnless { it.isNullOrBlank() }
@@ -151,6 +147,12 @@ class BybitTradeClient(
             executedValueUsdc = if (execValue > 0.0) execValue else if (status.equals("Filled", true)) estimatedNotional else 0.0,
             averagePrice = avg
         )
+    }
+
+    private fun ensureObservedUiMinimum(notionalUsdc: Double) {
+        if (notionalUsdc <= MIN_ORDER_USDC + 1e-9) {
+            throw IllegalStateException("La valeur totale doit être supérieure à ${fmt(MIN_ORDER_USDC)} USDC")
+        }
     }
 
     private fun verifySpotTradePermission() {
@@ -313,6 +315,7 @@ class BybitTradeClient(
     private fun fmt(value: Double): String = String.format(java.util.Locale.US, "%.6f", value).trimEnd('0').trimEnd('.')
 
     companion object {
+        const val MIN_ORDER_USDC = 1.0
         const val MAX_ORDER_USDC = 10.0
     }
 }
