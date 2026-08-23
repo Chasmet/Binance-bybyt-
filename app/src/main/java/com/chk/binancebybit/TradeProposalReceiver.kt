@@ -61,7 +61,7 @@ class TradeProposalReceiver : BroadcastReceiver() {
 
         manager.notify(NOTIFICATION_ID, notification)
         notified.addAll(fresh.map { it.id })
-        prefs.edit().putStringSet("notified_ids", notified.takeLast(100).toSet()).apply()
+        prefs.edit().putStringSet("notified_ids", notified.toList().takeLast(100).toSet()).apply()
     }
 
     companion object {
