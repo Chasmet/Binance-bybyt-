@@ -63,7 +63,7 @@ jobs:
         if: env.HAS_STABLE_SIGNING == 'true'
         uses: actions/upload-artifact@v4
         with:
-          name: CHK-Crypto-v0.5.5-stable-signed
+          name: CHK-Crypto-v0.6.0-stable-signed
           path: app/build/outputs/apk/release/app-release.apk
           if-no-files-found: error
           retention-days: 30
@@ -76,7 +76,7 @@ jobs:
         if: env.HAS_STABLE_SIGNING != 'true'
         uses: actions/upload-artifact@v4
         with:
-          name: CHK-Crypto-v0.5.5-debug
+          name: CHK-Crypto-v0.6.0-debug
           path: app/build/outputs/apk/debug/app-debug.apk
           if-no-files-found: error
           retention-days: 30
