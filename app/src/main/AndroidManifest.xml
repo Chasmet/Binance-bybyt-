@@ -32,6 +32,11 @@
             android:screenOrientation="portrait"
             android:theme="@android:style/Theme.NoDisplay" />
 
+        <activity
+            android:name=".BackupActivity"
+            android:exported="false"
+            android:screenOrientation="portrait" />
+
         <activity android:name=".MainActivity" android:exported="false" />
 
         <receiver android:name=".AlertCheckReceiver" android:exported="false" />
