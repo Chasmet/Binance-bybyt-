@@ -51,34 +51,24 @@ jobs:
           export SIGNING_JSON
           python - <<'PY'
           import base64, json, os
-
           data = json.loads(os.environ['SIGNING_JSON'])
           if data.get('ok') is not True:
               raise SystemExit('Render did not return signing material')
-
-          for secret in (
-              data['keystoreBase64'],
-              data['storePassword'],
-              data['keyPassword'],
-          ):
+          for secret in (data['keystoreBase64'], data['storePassword'], data['keyPassword']):
               print(f'::add-mask::{secret}')
-
           runner_temp = os.environ['RUNNER_TEMP']
           keystore_path = os.path.join(runner_temp, 'chk-crypto-stable.jks')
           props_path = os.path.join(runner_temp, 'chk-crypto-signing.properties')
-
           keystore = base64.b64decode(data['keystoreBase64'], validate=True)
           with open(keystore_path, 'wb') as f:
               f.write(keystore)
           os.chmod(keystore_path, 0o600)
-
           with open(props_path, 'w', encoding='utf-8') as f:
               f.write(f'keystorePath={keystore_path}\n')
               f.write(f'storePassword={data["storePassword"]}\n')
               f.write(f'keyAlias={data["keyAlias"]}\n')
               f.write(f'keyPassword={data["keyPassword"]}\n')
           os.chmod(props_path, 0o600)
-
           with open(os.environ['GITHUB_ENV'], 'a', encoding='utf-8') as env:
               env.write(f'CHK_SIGNING_PROPERTIES_PATH={props_path}\n')
           PY
@@ -98,15 +88,15 @@ jobs:
           APKSIGNER="$(find "$ANDROID_HOME/build-tools" -type f -name apksigner | sort -V | tail -n 1)"
           test -n "$APKSIGNER"
           "$APKSIGNER" verify --verbose --print-certs "$APK" | tee "$RUNNER_TEMP/chk-crypto-signing-certificate.txt"
-          cp "$APK" "app/build/outputs/apk/release/CHK-Crypto-v0.6.1-stable.apk"
+          cp "$APK" "app/build/outputs/apk/release/CHK-Crypto-v0.6.2-stable.apk"
 
       - name: Upload stable signed APK
         if: env.HAS_STABLE_SIGNING == 'true'
         uses: actions/upload-artifact@v4
         with:
-          name: CHK-Crypto-v0.6.1-stable-signed
+          name: CHK-Crypto-v0.6.2-stable-signed
           path: |
-            app/build/outputs/apk/release/CHK-Crypto-v0.6.1-stable.apk
+            app/build/outputs/apk/release/CHK-Crypto-v0.6.2-stable.apk
             ${{ runner.temp }}/chk-crypto-signing-certificate.txt
           if-no-files-found: error
           retention-days: 30
@@ -119,7 +109,7 @@ jobs:
         if: env.HAS_STABLE_SIGNING != 'true'
         uses: actions/upload-artifact@v4
         with:
-          name: CHK-Crypto-v0.6.1-debug-validation
+          name: CHK-Crypto-v0.6.2-debug-validation
           path: app/build/outputs/apk/debug/app-debug.apk
           if-no-files-found: error
           retention-days: 7
