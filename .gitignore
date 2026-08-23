@@ -4,3 +4,9 @@ local.properties
 **/build/
 *.iml
 .DS_Store
+
+# Never commit Android signing material
+*.jks
+*.keystore
+keystore.properties
+signing/
