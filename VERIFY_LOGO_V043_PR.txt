@@ -1,0 +1,1 @@
+PR build verification for adaptive CHK Crypto launcher icon
