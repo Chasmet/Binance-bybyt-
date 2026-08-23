@@ -13,6 +13,9 @@ permissions:
 jobs:
   build:
     runs-on: ubuntu-latest
+    env:
+      HAS_STABLE_SIGNING: ${{ secrets.CHK_CRYPTO_KEYSTORE_BASE64 != '' && secrets.CHK_CRYPTO_STORE_PASSWORD != '' && secrets.CHK_CRYPTO_KEY_ALIAS != '' && secrets.CHK_CRYPTO_KEY_PASSWORD != '' }}
+
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -28,13 +31,52 @@ jobs:
         with:
           gradle-version: '8.10.2'
 
-      - name: Build debug APK
-        run: gradle :app:assembleDebug --stacktrace
+      - name: Prepare stable signing key
+        if: env.HAS_STABLE_SIGNING == 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+          KEYSTORE="$RUNNER_TEMP/chk-crypto-stable.jks"
+          printf '%s' '${{ secrets.CHK_CRYPTO_KEYSTORE_BASE64 }}' | base64 --decode > "$KEYSTORE"
+          chmod 600 "$KEYSTORE"
+          echo "CHK_KEYSTORE_PATH=$KEYSTORE" >> "$GITHUB_ENV"
+          echo "CHK_KEYSTORE_PASSWORD=${{ secrets.CHK_CRYPTO_STORE_PASSWORD }}" >> "$GITHUB_ENV"
+          echo "CHK_KEY_ALIAS=${{ secrets.CHK_CRYPTO_KEY_ALIAS }}" >> "$GITHUB_ENV"
+          echo "CHK_KEY_PASSWORD=${{ secrets.CHK_CRYPTO_KEY_PASSWORD }}" >> "$GITHUB_ENV"
 
-      - name: Upload APK
+      - name: Build stable signed release APK
+        if: env.HAS_STABLE_SIGNING == 'true'
+        run: gradle :app:assembleRelease --stacktrace
+
+      - name: Verify stable APK signature
+        if: env.HAS_STABLE_SIGNING == 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+          APK="app/build/outputs/apk/release/app-release.apk"
+          test -f "$APK"
+          APKSIGNER="$(find "$ANDROID_HOME/build-tools" -type f -name apksigner | sort -V | tail -n 1)"
+          test -n "$APKSIGNER"
+          "$APKSIGNER" verify --verbose --print-certs "$APK"
+
+      - name: Upload stable signed APK
+        if: env.HAS_STABLE_SIGNING == 'true'
         uses: actions/upload-artifact@v4
         with:
-          name: CHK-Binance-Bybit-debug
+          name: CHK-Crypto-v0.5.5-stable-signed
+          path: app/build/outputs/apk/release/app-release.apk
+          if-no-files-found: error
+          retention-days: 30
+
+      - name: Build debug APK when stable signing is not configured
+        if: env.HAS_STABLE_SIGNING != 'true'
+        run: gradle :app:assembleDebug --stacktrace
+
+      - name: Upload debug APK
+        if: env.HAS_STABLE_SIGNING != 'true'
+        uses: actions/upload-artifact@v4
+        with:
+          name: CHK-Crypto-v0.5.5-debug
           path: app/build/outputs/apk/debug/app-debug.apk
           if-no-files-found: error
           retention-days: 30
