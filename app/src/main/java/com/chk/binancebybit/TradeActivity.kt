@@ -65,7 +65,7 @@ class TradeActivity : Activity() {
         }
 
         root.addView(TextView(this).apply {
-            text = "CHK Crypto • Ordres"
+            text = "CHK Crypto • Achat / Vente"
             textSize = 24f
             setTextColor(text)
             setTypeface(Typeface.DEFAULT, Typeface.BOLD)
@@ -79,13 +79,17 @@ class TradeActivity : Activity() {
 
         root.addView(infoBanner(
             "Aucun ordre automatique",
-            "ACHAT ou VENTE ne part jamais sans ton appui sur CONFIRMER. Plafond local : ${BybitTradeClient.MAX_ORDER_USDC.toInt()} USDC par ordre.",
+            "ACHAT ou VENTE ne part jamais sans ton appui sur CONFIRMER. Plafond local : ${BybitTradeClient.MAX_ORDER_USDC.toInt()} USDC par ordre. Le minimum Bybit dépend de la paire.",
             green
         ))
 
         val actions = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
-        actions.addView(actionButton("Portefeuille CHK") {
-            startActivity(Intent(this, MainActivityV4::class.java))
+        actions.addView(actionButton("← Portefeuille CHK") {
+            if (isTaskRoot) {
+                startActivity(Intent(this, MainActivityV4::class.java))
+            } else {
+                finish()
+            }
         }, LinearLayout.LayoutParams(0, dp(50), 1f).apply { setMargins(0, 0, dp(5), 0) })
         actions.addView(actionButton("Actualiser") { reload() }, LinearLayout.LayoutParams(0, dp(50), 1f).apply { setMargins(dp(5), 0, 0, 0) })
         root.addView(actions)
@@ -298,6 +302,7 @@ class TradeActivity : Activity() {
         val status = o.optString("status")
         val result = o.optJSONObject("result")
         val bybitStatus = result?.optString("orderStatus").orEmpty()
+        val errorMessage = result?.optString("error").orEmpty()
         return card().apply {
             addView(headerRow(side, symbol, o.optString("order_type")))
             addView(TextView(this@TradeActivity).apply {
@@ -309,9 +314,12 @@ class TradeActivity : Activity() {
                     if (!o.isNull("limit_price")) append("\nPrix : ${fmt(o.optDouble("limit_price"))} USDC")
                 }
                 textSize = 13f
-                setTextColor(muted)
+                setTextColor(if (status.equals("error", true)) red else muted)
                 setPadding(0, dp(10), 0, 0)
             })
+            if (errorMessage.isNotBlank()) {
+                addView(infoBanner("Pourquoi l'ordre a été refusé", errorMessage, red))
+            }
         }
     }
 
