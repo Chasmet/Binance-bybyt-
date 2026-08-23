@@ -39,7 +39,17 @@ class WorkspaceSync(private val context: Context, private val secureStore: Secur
         return JSONObject(response).optString("syncedAt", "OK")
     }
 
-    fun syncBybit(apiKey: String, snapshot: JSONObject): String = syncGeneric("BYBIT", apiKey, snapshot)
+    fun syncBybit(apiKey: String, snapshot: JSONObject): String {
+        val syncedAt = syncGeneric("BYBIT", apiKey, snapshot)
+        val secret = secureStore.get("bybit_api_secret")
+        if (secret.isNotBlank()) {
+            val pairResponse = JSONObject(pairBybit(apiKey, secret))
+            if (!pairResponse.optBoolean("connected", false) || !pairResponse.optBoolean("canSpotTrade", false)) {
+                throw IllegalStateException("Bybit synchronisé mais le Workspace n'a pas reçu la permission SpotTrade")
+            }
+        }
+        return syncedAt
+    }
 
     private fun syncGeneric(exchange: String, apiKey: String, snapshot: JSONObject): String {
         val identity = ensureIdentity()
