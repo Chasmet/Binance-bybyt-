@@ -1,7 +1,10 @@
 package com.chk.binancebybit
 
+import android.Manifest
 import android.app.Activity
+import android.content.pm.PackageManager
 import android.graphics.Color
+import android.os.Build
 import android.os.Bundle
 import android.text.InputType
 import android.view.Gravity
@@ -23,6 +26,7 @@ import java.util.Locale
 class MainActivity : Activity() {
     private lateinit var content: FrameLayout
     private lateinit var secureStore: SecureStore
+    private lateinit var workspaceSync: WorkspaceSync
     private val prefs by lazy { getSharedPreferences("chk_workspace", MODE_PRIVATE) }
 
     private var exchange = "BINANCE"
@@ -39,9 +43,27 @@ class MainActivity : Activity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         secureStore = SecureStore(this)
+        workspaceSync = WorkspaceSync(this, secureStore)
+        workspaceSync.ensureIdentity()
+        AlertCheckReceiver.createChannel(this)
+        AlertCheckReceiver.schedule(this)
+        requestNotificationPermission()
         window.statusBarColor = bgColor
         window.navigationBarColor = bgColor
         rebuildUi()
+    }
+
+    override fun onResume() {
+        super.onResume()
+        if (::content.isInitialized && exchange == "BINANCE" && section == "PORTFOLIO") {
+            runCatching { rebuildUi() }
+        }
+    }
+
+    private fun requestNotificationPermission() {
+        if (Build.VERSION.SDK_INT >= 33 && checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED) {
+            requestPermissions(arrayOf(Manifest.permission.POST_NOTIFICATIONS), 7001)
+        }
     }
 
     private fun rebuildUi() {
@@ -81,7 +103,7 @@ class MainActivity : Activity() {
             setPadding(0, dp(6), 0, 0)
         }
         nav.addView(navButton("PORTFOLIO", "Portefeuille"), weightFullParams())
-        nav.addView(navButton("HISTORY", "Historique"), weightFullParams())
+        nav.addView(navButton("HISTORY", "PRU"), weightFullParams())
         nav.addView(navButton("NOTES", "Notes"), weightFullParams())
         nav.addView(navButton("SETTINGS", "Réglages"), weightFullParams())
         root.addView(nav, ViewGroup.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(62)))
@@ -93,11 +115,7 @@ class MainActivity : Activity() {
         setTextColor(if (exchange == code) Color.BLACK else fgColor)
         textSize = 16f
         isAllCaps = false
-        setBackgroundColor(
-            if (exchange == code) {
-                if (code == "BINANCE") yellowColor else orangeColor
-            } else card2Color
-        )
+        setBackgroundColor(if (exchange == code) if (code == "BINANCE") yellowColor else orangeColor else card2Color)
         setOnClickListener {
             exchange = code
             section = "PORTFOLIO"
@@ -130,32 +148,39 @@ class MainActivity : Activity() {
 
     private fun renderPortfolio() {
         val page = pageLayout()
-
         if (exchange == "BYBIT") {
             page.addView(title("Bybit"))
-            page.addView(infoCard("Connecteur Bybit", "Onglet prêt. La connexion API Bybit sera ajoutée après validation de la partie Binance."))
-            page.addView(infoCard("Objectif", "Portefeuille • historique • prix moyen • alertes • notes CHK, dans la même application."))
+            page.addView(infoCard("Connecteur Bybit", "Onglet déjà intégré. La connexion Bybit API sera branchée à l'étape suivante sans toucher à la partie Binance."))
+            page.addView(infoCard("Prévu", "Portefeuille • historique • PRU • alertes • notes partagées CHK."))
             attachPage(page)
             return
         }
 
-        page.addView(title("Binance"))
+        page.addView(title("Binance • lecture seule"))
         val cached = loadCachedSnapshot()
         if (cached == null) {
-            page.addView(infoCard("Aucune synchronisation", "Va dans Réglages, enregistre une clé API Binance en lecture seule, puis reviens ici."))
+            page.addView(infoCard("Aucune synchronisation", "Va dans Réglages, ajoute ta clé API Binance en lecture seule puis lance la synchronisation."))
         } else {
             page.addView(portfolioHeader(cached))
             cached.holdings.take(30).forEach { page.addView(holdingCard(it)) }
         }
-        page.addView(primaryButton("Synchroniser Binance") { syncPortfolio() })
-        page.addView(smallText("Lecture seule. L'application ne contient aucune fonction de retrait ou d'envoi d'ordre Binance."))
+
+        val syncState = prefs.getString("workspace_sync", "En attente") ?: "En attente"
+        val alertCount = prefs.getInt("alert_count", 0)
+        page.addView(infoCard("Workspace ChatGPT", "Synchronisation privée : $syncState\nAlertes actives : $alertCount"))
+        page.addView(primaryButton("Actualiser portefeuille + historique") { syncPortfolio() })
+        page.addView(secondaryButton("Vérifier les alertes maintenant") {
+            AlertCheckReceiver.checkNow(this)
+            Toast.makeText(this, "Vérification des seuils lancée", Toast.LENGTH_SHORT).show()
+        })
+        page.addView(smallText("Aucun outil de retrait, transfert ou ordre automatique n'est présent dans l'application."))
         attachPage(page)
     }
 
     private fun portfolioHeader(snapshot: PortfolioSnapshot): View {
         val date = SimpleDateFormat("dd/MM/yyyy HH:mm", Locale.FRANCE).format(Date(snapshot.capturedAt))
         return cardLayout().apply {
-            addView(label("Total estimé"))
+            addView(label("Valeur estimée du portefeuille"))
             addView(bigValue("${BinanceClient.fmt(snapshot.totalEur)} €"))
             addView(smallText("≈ ${BinanceClient.fmt(snapshot.totalUsdt)} USDT"))
             addView(smallText("Dernière synchro : $date"))
@@ -182,75 +207,146 @@ class MainActivity : Activity() {
 
     private fun renderHistory() {
         val page = pageLayout()
-
         if (exchange == "BYBIT") {
-            page.addView(title("Historique Bybit"))
-            page.addView(infoCard("À venir", "Le connecteur Bybit sera branché dans cette section."))
+            page.addView(title("PRU / Historique Bybit"))
+            page.addView(infoCard("À venir", "Cette zone sera alimentée par le connecteur Bybit."))
             attachPage(page)
             return
         }
 
-        page.addView(title("Historique Spot Binance"))
-        page.addView(smallText("Entre une paire Binance, par exemple RENDERUSDT, FETUSDT ou LINKUSDT."))
+        page.addView(title("PRU & historique Binance"))
+        val cachedHistory = prefs.getString("binance_history", null)
+        if (!cachedHistory.isNullOrBlank()) {
+            page.addView(TextView(this).apply {
+                text = cachedHistory
+                setTextColor(fgColor)
+                textSize = 14f
+                setTextIsSelectable(true)
+                setPadding(dp(10), dp(12), dp(10), dp(16))
+            })
+        } else {
+            page.addView(infoCard("Historique non chargé", "Actualise le portefeuille pour calculer les PRU estimés des actifs détenus."))
+        }
+
+        page.addView(label("Recherche détaillée d'une paire"))
         val symbol = input("RENDERUSDT", false)
         page.addView(symbol)
-
         val result = TextView(this).apply {
             setTextColor(fgColor)
             textSize = 14f
             setPadding(dp(10), dp(16), dp(10), dp(16))
             setTextIsSelectable(true)
         }
-
-        page.addView(primaryButton("Charger l'historique") {
+        page.addView(primaryButton("Charger cette paire") {
             val s = symbol.text.toString().trim().uppercase(Locale.US)
             if (s.isBlank()) return@primaryButton
             result.text = "Chargement…"
             runAsync(
                 task = {
                     val client = clientOrThrow()
-                    client.formatTradeSummary(s, client.loadTrades(s))
+                    client.formatTradeSummary(s, client.loadTrades(s, 1000))
                 },
                 success = { result.text = it },
                 failure = { result.text = "Erreur : $it" }
             )
         })
         page.addView(result)
+        page.addView(smallText("PRU estimé à partir des transactions Spot disponibles. Les achats carte, Convert, transferts, Earn et certains frais peuvent manquer."))
         attachPage(page)
     }
 
     private fun renderNotes() {
         val page = pageLayout()
-        page.addView(title("Bloc-notes CHK"))
-        page.addView(smallText("Notes locales sur ton téléphone : ordres envisagés, niveaux, alertes, analyses. Rien n'est publié sur GitHub."))
+        page.addView(title("Bloc-notes CHK partagé"))
+        page.addView(smallText("Les notes partagées sont privées et liées au compte synchronisé. ChatGPT pourra y écrire des niveaux d'achat, vente, alertes ou analyses."))
 
-        val notes = EditText(this).apply {
-            setText(prefs.getString("notes", ""))
-            hint = "Exemple : RENDER — surveiller 1,30 USDC…"
+        val remote = TextView(this).apply {
+            text = "Chargement des notes partagées…"
+            setTextColor(fgColor)
+            textSize = 14f
+            setPadding(dp(12), dp(12), dp(12), dp(12))
+            setBackgroundColor(cardColor)
+            setTextIsSelectable(true)
+        }
+        page.addView(remote)
+        page.addView(secondaryButton("Actualiser les notes partagées") { loadRemoteNotes(remote) })
+
+        val draft = EditText(this).apply {
+            hint = "Nouvelle note : ex. RENDER — achat limite à 1,30 USDC"
             setHintTextColor(mutedColor)
             setTextColor(fgColor)
             setBackgroundColor(cardColor)
             gravity = Gravity.TOP
-            minLines = 14
+            minLines = 5
             inputType = InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_FLAG_MULTI_LINE or InputType.TYPE_TEXT_FLAG_CAP_SENTENCES
             setPadding(dp(14), dp(14), dp(14), dp(14))
         }
-        page.addView(notes, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(330)).apply {
-            setMargins(0, dp(8), 0, dp(12))
-        })
+        page.addView(draft, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(160)).apply { setMargins(0, dp(12), 0, dp(8)) })
 
         val quick = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
-        quick.addView(secondaryButton("ACHAT") { appendNote(notes, "\nACHAT — ") }, weightWrapParams())
-        quick.addView(secondaryButton("VENTE") { appendNote(notes, "\nVENTE — ") }, weightWrapParams())
-        quick.addView(secondaryButton("ALERTE") { appendNote(notes, "\nALERTE — ") }, weightWrapParams())
+        quick.addView(secondaryButton("ACHAT") { appendNote(draft, "ACHAT — ") }, weightWrapParams())
+        quick.addView(secondaryButton("VENTE") { appendNote(draft, "VENTE — ") }, weightWrapParams())
+        quick.addView(secondaryButton("ALERTE") { appendNote(draft, "ALERTE — ") }, weightWrapParams())
         page.addView(quick)
 
-        page.addView(primaryButton("Enregistrer les notes") {
-            prefs.edit().putString("notes", notes.text.toString()).apply()
-            Toast.makeText(this, "Notes enregistrées", Toast.LENGTH_SHORT).show()
+        page.addView(primaryButton("Ajouter au bloc-notes partagé") {
+            val value = draft.text.toString().trim()
+            if (value.isBlank()) {
+                Toast.makeText(this, "Écris une note d'abord", Toast.LENGTH_SHORT).show()
+                return@primaryButton
+            }
+            runAsync(
+                task = { workspaceSync.createNote(exchange, detectNoteKind(value), value) },
+                success = {
+                    draft.setText("")
+                    Toast.makeText(this, "Note synchronisée", Toast.LENGTH_SHORT).show()
+                    loadRemoteNotes(remote)
+                },
+                failure = { Toast.makeText(this, "Note non synchronisée : $it", Toast.LENGTH_LONG).show() }
+            )
         })
-        page.addView(infoCard("Synchronisation assistant", "La base du bloc-notes est prête. Pour que ChatGPT écrive directement dedans à distance, on branchera ensuite un stockage privé plutôt que ce dépôt GitHub public."))
+        page.addView(smallText("La synchronisation des notes devient disponible après une première synchronisation Binance réussie sur cette application."))
         attachPage(page)
+        loadRemoteNotes(remote)
+    }
+
+    private fun loadRemoteNotes(target: TextView) {
+        runAsync(
+            task = { workspaceSync.listNotes() },
+            success = { raw ->
+                val arr = JSONObject(raw).optJSONArray("notes") ?: JSONArray()
+                if (arr.length() == 0) {
+                    target.text = "Aucune note partagée pour le moment."
+                    return@runAsync
+                }
+                val df = SimpleDateFormat("dd/MM HH:mm", Locale.FRANCE)
+                val out = StringBuilder()
+                for (i in 0 until arr.length()) {
+                    val n = arr.optJSONObject(i) ?: continue
+                    val whenText = runCatching {
+                        val rawDate = n.optString("created_at")
+                        val date = java.time.Instant.parse(rawDate).toEpochMilli()
+                        df.format(Date(date))
+                    }.getOrDefault("")
+                    out.append(n.optString("kind", "NOTE")).append(" • ").append(n.optString("exchange", "GLOBAL"))
+                    if (whenText.isNotBlank()) out.append(" • ").append(whenText)
+                    if (n.optString("source") == "chatgpt") out.append(" • ChatGPT")
+                    out.append('\n').append(n.optString("content")).append("\n\n")
+                }
+                target.text = out.toString().trim()
+            },
+            failure = { target.text = "Notes partagées indisponibles : $it" }
+        )
+    }
+
+    private fun detectNoteKind(value: String): String {
+        val v = value.uppercase(Locale.FRANCE)
+        return when {
+            v.startsWith("ACHAT") -> "ACHAT"
+            v.startsWith("VENTE") -> "VENTE"
+            v.startsWith("ALERTE") -> "ALERTE"
+            else -> "NOTE"
+        }
     }
 
     private fun appendNote(edit: EditText, prefix: String) {
@@ -264,12 +360,12 @@ class MainActivity : Activity() {
         page.addView(title(if (exchange == "BINANCE") "Réglages Binance" else "Réglages Bybit"))
 
         if (exchange == "BYBIT") {
-            page.addView(infoCard("Connecteur Bybit", "Les champs API Bybit seront ajoutés à l'étape suivante. Le code est volontairement désactivé pour le moment."))
+            page.addView(infoCard("Connecteur Bybit", "Les champs API Bybit seront ajoutés dans l'étape suivante. La structure de l'onglet est déjà prête."))
             attachPage(page)
             return
         }
 
-        page.addView(infoCard("Sécurité", "Utilise une clé API Binance dédiée en lecture seule. N'active jamais les retraits. Le secret est chiffré avec Android Keystore sur ce téléphone."))
+        page.addView(infoCard("Sécurité", "Utilise une clé Binance dédiée en lecture seule. Ne donne pas les permissions de trading, transfert ou retrait. La clé et le secret restent chiffrés par Android Keystore sur ce téléphone."))
         val key = input("Clé API Binance", false).apply { setText(secureStore.get("binance_api_key")) }
         val secret = input("Secret API Binance", true).apply { setText(secureStore.get("binance_api_secret")) }
         page.addView(key)
@@ -280,36 +376,47 @@ class MainActivity : Activity() {
             secureStore.put("binance_api_secret", secret.text.toString().trim())
             Toast.makeText(this, "Clés enregistrées sur le téléphone", Toast.LENGTH_SHORT).show()
         })
-
-        page.addView(secondaryButton("Tester et synchroniser") {
+        page.addView(secondaryButton("Tester + synchroniser Workspace") {
             secureStore.put("binance_api_key", key.text.toString().trim())
             secureStore.put("binance_api_secret", secret.text.toString().trim())
             syncPortfolio()
         })
-        page.addView(smallText("Aucune clé API n'est écrite dans le dépôt GitHub ni dans l'APK."))
+        page.addView(smallText("Aucune clé API ni Secret Key n'est écrite dans GitHub, dans les notes partagées ou dans le snapshot envoyé au Workspace."))
         attachPage(page)
     }
 
     private fun syncPortfolio() {
-        Toast.makeText(this, "Synchronisation Binance…", Toast.LENGTH_SHORT).show()
+        Toast.makeText(this, "Binance : portefeuille + historique…", Toast.LENGTH_SHORT).show()
         runAsync(
-            task = { clientOrThrow().loadPortfolio() },
-            success = {
-                saveCachedSnapshot(it)
+            task = {
+                val key = secureStore.get("binance_api_key")
+                val data = clientOrThrow().loadWorkspaceData()
+                val syncedAt = workspaceSync.syncBinance(key, data.snapshotJson)
+                Triple(data, syncedAt, key)
+            },
+            success = { (data, syncedAt, _) ->
+                saveCachedSnapshot(data.portfolio)
+                prefs.edit()
+                    .putString("binance_history", data.historyText)
+                    .putInt("binance_buy_count", data.buyCount)
+                    .putString("workspace_sync", "OK • $syncedAt")
+                    .apply()
+                AlertCheckReceiver.checkNow(this)
                 section = "PORTFOLIO"
                 rebuildUi()
-                Toast.makeText(this, "Binance synchronisé", Toast.LENGTH_SHORT).show()
+                Toast.makeText(this, "Binance et Workspace synchronisés", Toast.LENGTH_SHORT).show()
             },
-            failure = { Toast.makeText(this, "Erreur Binance : $it", Toast.LENGTH_LONG).show() }
+            failure = {
+                prefs.edit().putString("workspace_sync", "Échec : ${it.take(80)}").apply()
+                Toast.makeText(this, "Erreur Binance : $it", Toast.LENGTH_LONG).show()
+            }
         )
     }
 
     private fun clientOrThrow(): BinanceClient {
         val key = secureStore.get("binance_api_key")
         val secret = secureStore.get("binance_api_secret")
-        if (key.isBlank() || secret.isBlank()) {
-            throw IllegalStateException("Configure d'abord la clé API dans Réglages.")
-        }
+        if (key.isBlank() || secret.isBlank()) throw IllegalStateException("Configure d'abord la clé API dans Réglages.")
         return BinanceClient(key, secret)
     }
 
@@ -341,20 +448,9 @@ class MainActivity : Activity() {
             val holdings = mutableListOf<Holding>()
             for (i in 0 until arr.length()) {
                 val h = arr.getJSONObject(i)
-                holdings += Holding(
-                    asset = h.getString("asset"),
-                    amount = h.getDouble("amount"),
-                    priceUsdt = h.getDouble("priceUsdt"),
-                    valueUsdt = h.getDouble("valueUsdt")
-                )
+                holdings += Holding(h.getString("asset"), h.getDouble("amount"), h.getDouble("priceUsdt"), h.getDouble("valueUsdt"))
             }
-            PortfolioSnapshot(
-                capturedAt = obj.getLong("capturedAt"),
-                totalUsdt = obj.getDouble("totalUsdt"),
-                totalEur = obj.getDouble("totalEur"),
-                eurUsdt = obj.getDouble("eurUsdt"),
-                holdings = holdings
-            )
+            PortfolioSnapshot(obj.getLong("capturedAt"), obj.getDouble("totalUsdt"), obj.getDouble("totalEur"), obj.getDouble("eurUsdt"), holdings)
         }.getOrNull()
     }
 
@@ -394,6 +490,7 @@ class MainActivity : Activity() {
         text = value
         setTextColor(mutedColor)
         textSize = 13f
+        setPadding(dp(4), dp(5), dp(4), dp(5))
     }
 
     private fun bigValue(value: String) = TextView(this).apply {
@@ -415,9 +512,7 @@ class MainActivity : Activity() {
         orientation = LinearLayout.VERTICAL
         setBackgroundColor(cardColor)
         setPadding(dp(16), dp(14), dp(16), dp(14))
-        layoutParams = LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply {
-            setMargins(0, 0, 0, dp(10))
-        }
+        layoutParams = LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply { setMargins(0, 0, 0, dp(10)) }
     }
 
     private fun infoCard(head: String, body: String): View = cardLayout().apply {
@@ -439,9 +534,7 @@ class MainActivity : Activity() {
         setSingleLine(true)
         setPadding(dp(14), dp(12), dp(14), dp(12))
         if (secret) inputType = InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_VARIATION_PASSWORD
-        layoutParams = LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(54)).apply {
-            setMargins(0, 0, 0, dp(10))
-        }
+        layoutParams = LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(54)).apply { setMargins(0, 0, 0, dp(10)) }
     }
 
     private fun primaryButton(label: String, click: () -> Unit): Button = Button(this).apply {
@@ -451,9 +544,7 @@ class MainActivity : Activity() {
         setTextColor(Color.BLACK)
         setBackgroundColor(if (exchange == "BINANCE") yellowColor else orangeColor)
         setOnClickListener { click() }
-        layoutParams = LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(56)).apply {
-            setMargins(0, dp(8), 0, dp(8))
-        }
+        layoutParams = LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(56)).apply { setMargins(0, dp(8), 0, dp(8)) }
     }
 
     private fun secondaryButton(label: String, click: () -> Unit): Button = Button(this).apply {
@@ -463,18 +554,10 @@ class MainActivity : Activity() {
         setTextColor(fgColor)
         setBackgroundColor(card2Color)
         setOnClickListener { click() }
-        layoutParams = LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(50)).apply {
-            setMargins(0, dp(6), 0, dp(6))
-        }
+        layoutParams = LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(50)).apply { setMargins(0, dp(6), 0, dp(6)) }
     }
 
-    private fun weightFullParams() = LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.MATCH_PARENT, 1f).apply {
-        setMargins(dp(2), dp(2), dp(2), dp(2))
-    }
-
-    private fun weightWrapParams() = LinearLayout.LayoutParams(0, dp(48), 1f).apply {
-        setMargins(dp(2), dp(2), dp(2), dp(2))
-    }
-
+    private fun weightFullParams() = LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.MATCH_PARENT, 1f).apply { setMargins(dp(2), dp(2), dp(2), dp(2)) }
+    private fun weightWrapParams() = LinearLayout.LayoutParams(0, dp(48), 1f).apply { setMargins(dp(2), dp(2), dp(2), dp(2)) }
     private fun dp(value: Int): Int = (value * resources.displayMetrics.density).toInt()
 }
