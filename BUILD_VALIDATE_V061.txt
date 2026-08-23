@@ -1,0 +1,2 @@
+CHK Crypto v0.6.1 final Render-key/stable-signing architecture validation.
+No runtime behavior change.
