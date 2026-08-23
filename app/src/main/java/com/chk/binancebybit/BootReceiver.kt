@@ -6,6 +6,9 @@ import android.content.Intent
 
 class BootReceiver : BroadcastReceiver() {
     override fun onReceive(context: Context, intent: Intent?) {
-        AlertCheckReceiver.schedule(context.applicationContext)
+        val app = context.applicationContext
+        AlertCheckReceiver.schedule(app)
+        TradeProposalReceiver.createChannel(app)
+        TradeProposalReceiver.schedule(app)
     }
 }
