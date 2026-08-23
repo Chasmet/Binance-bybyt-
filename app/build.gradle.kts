@@ -1,12 +1,25 @@
+import java.util.Properties
+
 plugins {
     id("com.android.application")
     id("org.jetbrains.kotlin.android")
 }
 
-val stableKeystorePath = providers.environmentVariable("CHK_KEYSTORE_PATH").orNull
-val stableStorePassword = providers.environmentVariable("CHK_KEYSTORE_PASSWORD").orNull
-val stableKeyAlias = providers.environmentVariable("CHK_KEY_ALIAS").orNull
-val stableKeyPassword = providers.environmentVariable("CHK_KEY_PASSWORD").orNull
+val signingPropsPath = providers.environmentVariable("CHK_SIGNING_PROPERTIES_PATH").orNull
+val signingProps = Properties().apply {
+    if (!signingPropsPath.isNullOrBlank()) {
+        rootProject.file(signingPropsPath).inputStream().use { load(it) }
+    }
+}
+
+val stableKeystorePath = signingProps.getProperty("keystorePath")
+    ?: providers.environmentVariable("CHK_KEYSTORE_PATH").orNull
+val stableStorePassword = signingProps.getProperty("storePassword")
+    ?: providers.environmentVariable("CHK_KEYSTORE_PASSWORD").orNull
+val stableKeyAlias = signingProps.getProperty("keyAlias")
+    ?: providers.environmentVariable("CHK_KEY_ALIAS").orNull
+val stableKeyPassword = signingProps.getProperty("keyPassword")
+    ?: providers.environmentVariable("CHK_KEY_PASSWORD").orNull
 val stableSigningConfigured = listOf(
     stableKeystorePath,
     stableStorePassword,
