@@ -22,7 +22,7 @@ jobs:
         uses: actions/checkout@v4
 
       - name: Setup Java 17
-        uses: actions/setup-java@v4
+        uses: actions/setup-java@v5
         with:
           distribution: temurin
           java-version: '17'
@@ -51,23 +51,36 @@ jobs:
           export SIGNING_JSON
           python - <<'PY'
           import base64, json, os
+
           data = json.loads(os.environ['SIGNING_JSON'])
           if data.get('ok') is not True:
               raise SystemExit('Render did not return signing material')
+
+          for secret in (
+              data['keystoreBase64'],
+              data['storePassword'],
+              data['keyPassword'],
+          ):
+              print(f'::add-mask::{secret}')
+
+          runner_temp = os.environ['RUNNER_TEMP']
+          keystore_path = os.path.join(runner_temp, 'chk-crypto-stable.jks')
+          props_path = os.path.join(runner_temp, 'chk-crypto-signing.properties')
+
           keystore = base64.b64decode(data['keystoreBase64'], validate=True)
-          path = os.path.join(os.environ['RUNNER_TEMP'], 'chk-crypto-stable.jks')
-          with open(path, 'wb') as f:
+          with open(keystore_path, 'wb') as f:
               f.write(keystore)
-          os.chmod(path, 0o600)
-          values = {
-              'CHK_KEYSTORE_PATH': path,
-              'CHK_KEYSTORE_PASSWORD': data['storePassword'],
-              'CHK_KEY_ALIAS': data['keyAlias'],
-              'CHK_KEY_PASSWORD': data['keyPassword'],
-          }
+          os.chmod(keystore_path, 0o600)
+
+          with open(props_path, 'w', encoding='utf-8') as f:
+              f.write(f'keystorePath={keystore_path}\n')
+              f.write(f'storePassword={data["storePassword"]}\n')
+              f.write(f'keyAlias={data["keyAlias"]}\n')
+              f.write(f'keyPassword={data["keyPassword"]}\n')
+          os.chmod(props_path, 0o600)
+
           with open(os.environ['GITHUB_ENV'], 'a', encoding='utf-8') as env:
-              for key, value in values.items():
-                  env.write(f'{key}={value}\n')
+              env.write(f'CHK_SIGNING_PROPERTIES_PATH={props_path}\n')
           PY
           unset SIGNING_JSON OIDC_TOKEN TOKEN_JSON
 
