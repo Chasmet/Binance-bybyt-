@@ -1,0 +1,2 @@
+CHK Crypto v0.5.5 final build validation marker.
+No runtime behavior change.
