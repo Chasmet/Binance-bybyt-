@@ -11,8 +11,9 @@
         android:roundIcon="@drawable/app_icon"
         android:theme="@android:style/Theme.Material.NoActionBar"
         android:usesCleartextTraffic="false">
+
         <activity
-            android:name=".MainActivityV4"
+            android:name=".TradeActivity"
             android:exported="true"
             android:screenOrientation="portrait">
             <intent-filter>
@@ -21,9 +22,14 @@
             </intent-filter>
         </activity>
 
+        <activity
+            android:name=".MainActivityV4"
+            android:exported="false"
+            android:screenOrientation="portrait" />
         <activity android:name=".MainActivity" android:exported="false" />
 
         <receiver android:name=".AlertCheckReceiver" android:exported="false" />
+        <receiver android:name=".TradeProposalReceiver" android:exported="false" />
         <receiver android:name=".BootReceiver" android:enabled="true" android:exported="true">
             <intent-filter>
                 <action android:name="android.intent.action.BOOT_COMPLETED" />
