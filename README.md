@@ -2,32 +2,38 @@
 
 Application Android personnelle regroupant deux espaces : **Binance** et **Bybit**.
 
-## Version 0.2
+## Version 0.3
 
 ### Binance
 - Connexion API Binance en **lecture seule**.
 - Clé API et Secret Key chiffrés localement avec Android Keystore.
 - Portefeuille et valorisation estimée EUR / USDT.
 - Historique Spot, PRU estimé, achats/ventes et P/L estimée.
-- Synchronisation privée avec le **CHK Binance Workspace** existant afin que ChatGPT retrouve le dernier snapshot.
-- Alertes de prix persistantes et notifications Android, contrôlées environ toutes les 15 minutes.
-- Aucun trading, transfert ou retrait automatique.
+- Synchronisation privée avec le **CHK Binance Workspace** existant.
+- Alertes de prix persistantes et notifications Android.
 
-### Bybit
-- Onglet **Bybit** déjà intégré dans la même APK.
-- Structure prête pour le futur connecteur Bybit : portefeuille, historique, PRU, alertes et notes.
+### Bybit EU
+- Connexion directe à l'API V5 EEE : `https://api.bybit.eu`.
+- API Key et Secret Key chiffrés localement avec Android Keystore.
+- Portefeuille UNIFIED et valorisation estimée EUR / USD.
+- Historique des exécutions Spot et PRU estimé.
+- Lecture des informations de la clé API et de ses permissions Spot.
+- Synchronisation privée Bybit vers le même backend **CHK Crypto Workspace**.
+- Aucun Secret Bybit n'est envoyé à Supabase, GitHub ou ChatGPT.
+
+### Ordres limite Bybit
+La clé Bybit peut posséder la permission **Spot Trader**, mais la v0.3 ne contient volontairement **aucun appel de création d'ordre**. L'étape suivante ajoutera uniquement les ordres **Spot Limit**, sans levier, après validation par e-mail.
 
 ### Bloc-notes CHK partagé
-- Notes privées liées au compte crypto synchronisé.
+- Notes privées communes à Binance et Bybit.
 - Types rapides : **ACHAT**, **VENTE**, **ALERTE**, **NOTE**.
-- Stockage privé Supabase ; aucune note financière n'est publiée dans ce dépôt GitHub.
-- Préparé pour que ChatGPT puisse ajouter des ordres envisagés, niveaux, alertes ou analyses dans le bloc-notes.
+- Stockage privé Supabase ; aucune note financière n'est publiée dans GitHub.
 
 ## Sécurité
 
-Créer une clé Binance dédiée avec uniquement les autorisations de lecture nécessaires. **Ne jamais activer les retraits** ; le trading n'est pas requis pour cette application.
-
-Aucune API Key ou Secret Key n'est incluse dans le dépôt, l'APK, les snapshots Workspace ou le bloc-notes partagé.
+- Ne jamais activer les retraits pour les clés utilisées par cette application.
+- Les secrets API restent chiffrés sur le téléphone.
+- Les snapshots Workspace ne contiennent ni API Key brute ni Secret Key.
 
 ## APK
 
