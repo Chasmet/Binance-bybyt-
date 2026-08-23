@@ -1,0 +1,1 @@
+Verification build for CHK Crypto Workspace v0.3 Bybit EU connector.
