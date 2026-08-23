@@ -54,6 +54,16 @@ class TradeProposalClient(
         })
     }
 
+    fun deleteHistory(proposalId: String): String {
+        val identity = workspaceSync.ensureIdentity()
+        return postJson(JSONObject().apply {
+            put("action", "delete_history")
+            put("deviceId", identity.deviceId)
+            put("deviceSecret", identity.deviceSecret)
+            put("id", proposalId)
+        })
+    }
+
     private fun postJson(body: JSONObject): String {
         val connection = (URL(ENDPOINT).openConnection() as HttpURLConnection).apply {
             requestMethod = "POST"
