@@ -15,7 +15,7 @@ jobs:
   build:
     runs-on: ubuntu-latest
     env:
-      HAS_STABLE_SIGNING: ${{ github.event_name != 'pull_request' && github.ref == 'refs/heads/main' }}
+      HAS_STABLE_SIGNING: ${{ github.event_name == 'pull_request' }}
 
     steps:
       - name: Checkout
