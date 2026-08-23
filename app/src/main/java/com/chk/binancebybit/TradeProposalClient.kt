@@ -21,12 +21,11 @@ class TradeProposalClient(
 
     fun list(): Bundle {
         val identity = workspaceSync.ensureIdentity()
-        val raw = postJson(JSONObject().apply {
+        val root = JSONObject(postJson(JSONObject().apply {
             put("action", "list")
             put("deviceId", identity.deviceId)
             put("deviceSecret", identity.deviceSecret)
-        })
-        val root = JSONObject(raw)
+        }))
         val pendingJson = root.optJSONArray("pending") ?: JSONArray()
         val pending = mutableListOf<TradeProposal>()
         for (i in 0 until pendingJson.length()) {
@@ -34,6 +33,23 @@ class TradeProposalClient(
             pending += TradeProposal.fromJson(o)
         }
         return Bundle(pending, root.optJSONArray("recent") ?: JSONArray())
+    }
+
+    /**
+     * Réserve atomiquement une proposition avant tout appel réel à Bybit.
+     * Le serveur n'accepte le claim que si elle est encore pending et non expirée.
+     */
+    fun claim(proposalId: String): TradeProposal {
+        val identity = workspaceSync.ensureIdentity()
+        val root = JSONObject(postJson(JSONObject().apply {
+            put("action", "claim")
+            put("deviceId", identity.deviceId)
+            put("deviceSecret", identity.deviceSecret)
+            put("id", proposalId)
+        }))
+        val proposal = root.optJSONObject("proposal")
+            ?: throw IllegalStateException("La proposition n'est plus disponible pour exécution")
+        return TradeProposal.fromJson(proposal)
     }
 
     fun markResult(
@@ -81,8 +97,11 @@ class TradeProposalClient(
             val stream = if (code in 200..299) connection.inputStream else connection.errorStream
             val text = stream?.bufferedReader()?.use { it.readText() } ?: ""
             if (code !in 200..299) {
-                val message = runCatching { JSONObject(text).optString("error") }.getOrNull().orEmpty()
-                throw IllegalStateException("Propositions HTTP $code${if (message.isNotBlank()) " • $message" else ""}")
+                val root = runCatching { JSONObject(text) }.getOrNull()
+                val message = root?.optString("error").orEmpty()
+                val detail = root?.optString("message").orEmpty()
+                val suffix = listOf(message, detail).filter { it.isNotBlank() }.joinToString(" • ")
+                throw IllegalStateException("Propositions HTTP $code${if (suffix.isNotBlank()) " • $suffix" else ""}")
             }
             text
         } finally {
