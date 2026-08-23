@@ -1,0 +1,2 @@
+CHK Crypto v0.6.0 Render-key architecture build validation after Kotlin fix.
+No runtime behavior change.
