@@ -68,7 +68,7 @@ class TradeProposalReceiver : BroadcastReceiver() {
         private const val CHANNEL_ID = "chk_trade_proposals"
         private const val NOTIFICATION_ID = 8814
         private const val REQUEST_CODE = 8812
-        private const val INTERVAL_MS = 15L * 60L * 1000L
+        private const val INTERVAL_MS = 60L * 1000L
 
         fun createChannel(context: Context) {
             if (Build.VERSION.SDK_INT >= 26) {
@@ -94,8 +94,13 @@ class TradeProposalReceiver : BroadcastReceiver() {
                 intent,
                 PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
             )
-            val first = System.currentTimeMillis() + 60_000L
+            val first = System.currentTimeMillis() + 5_000L
             alarm.setInexactRepeating(AlarmManager.RTC_WAKEUP, first, INTERVAL_MS, pending)
+            checkNow(context)
+        }
+
+        fun checkNow(context: Context) {
+            context.applicationContext.sendBroadcast(Intent(context.applicationContext, TradeProposalReceiver::class.java))
         }
 
         private fun format(v: Double): String = String.format(java.util.Locale.US, "%.4f", v).trimEnd('0').trimEnd('.')
