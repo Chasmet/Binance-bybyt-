@@ -2,6 +2,7 @@ package com.chk.binancebybit
 
 import android.Manifest
 import android.app.Activity
+import android.content.Intent
 import android.content.pm.PackageManager
 import android.graphics.Color
 import android.graphics.Typeface
@@ -59,6 +60,8 @@ class MainActivityV4 : Activity() {
         workspaceSync.ensureIdentity()
         AlertCheckReceiver.createChannel(this)
         AlertCheckReceiver.schedule(this)
+        TradeProposalReceiver.createChannel(this)
+        TradeProposalReceiver.schedule(this)
         requestNotificationPermission()
         window.statusBarColor = bg
         window.navigationBarColor = bg
@@ -67,6 +70,7 @@ class MainActivityV4 : Activity() {
 
     override fun onResume() {
         super.onResume()
+        TradeProposalReceiver.checkNow(this)
         if (::content.isInitialized) runCatching { rebuildUi() }
     }
 
@@ -169,6 +173,7 @@ class MainActivityV4 : Activity() {
         val items = listOf(
             "HOME" to "Accueil",
             "PORTFOLIO" to "Actifs",
+            "ORDERS" to "Ordres",
             "HISTORY" to "PRU",
             "NOTES" to "Notes",
             "SETTINGS" to "Réglages"
@@ -176,7 +181,7 @@ class MainActivityV4 : Activity() {
         return LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
             gravity = Gravity.CENTER
-            setPadding(dp(8), dp(5), dp(8), dp(8))
+            setPadding(dp(4), dp(5), dp(4), dp(8))
             background = rounded(surface, border, 0)
             items.forEach { (code, label) ->
                 addView(navButton(code, label), LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.MATCH_PARENT, 1f))
@@ -189,31 +194,36 @@ class MainActivityV4 : Activity() {
         return LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
             gravity = Gravity.CENTER
-            setPadding(dp(2), dp(4), dp(2), dp(4))
+            setPadding(dp(1), dp(4), dp(1), dp(4))
             background = if (active) rounded(surface2, Color.TRANSPARENT, 14) else transparentRounded()
 
             addView(TextView(this@MainActivityV4).apply {
                 text = when (code) {
                     "HOME" -> "●"
                     "PORTFOLIO" -> "▦"
+                    "ORDERS" -> "✓"
                     "HISTORY" -> "↗"
                     "NOTES" -> "✎"
                     else -> "⚙"
                 }
-                textSize = if (code == "HOME") 12f else 18f
-                setTextColor(if (active) accent() else muted)
+                textSize = if (code == "HOME") 12f else 17f
+                setTextColor(if (code == "ORDERS") orange else if (active) accent() else muted)
                 gravity = Gravity.CENTER
             })
             addView(TextView(this@MainActivityV4).apply {
                 text = label
-                textSize = 10f
+                textSize = 9f
                 setTypeface(Typeface.DEFAULT, if (active) Typeface.BOLD else Typeface.NORMAL)
-                setTextColor(if (active) text else muted)
+                setTextColor(if (code == "ORDERS") orange else if (active) text else muted)
                 gravity = Gravity.CENTER
             })
             setOnClickListener {
-                section = code
-                rebuildUi()
+                if (code == "ORDERS") {
+                    startActivity(Intent(this@MainActivityV4, TradeActivity::class.java))
+                } else {
+                    section = code
+                    rebuildUi()
+                }
             }
         }
     }
@@ -251,7 +261,7 @@ class MainActivityV4 : Activity() {
         page.addView(subTitle("Actions rapides"))
         page.addView(twoColumnButtons(
             actionButton("↻  Tout synchroniser") { syncAll() },
-            actionButton("✎  Nouvelle note") { section = "NOTES"; rebuildUi() }
+            actionButton("✓  Ordres à confirmer") { startActivity(Intent(this, TradeActivity::class.java)) }
         ))
 
         val selected = loadSnapshot(exchange)
@@ -265,7 +275,7 @@ class MainActivityV4 : Activity() {
         val alerts = prefs.getInt("alert_count", 0)
         page.addView(infoBanner(
             "Sécurité active",
-            "${if (exchange == "BINANCE") "Binance en lecture seule" else "Bybit : trading Spot autorisé, mais l'app n'envoie encore aucun ordre"} • $alerts alerte(s) active(s).",
+            "${if (exchange == "BINANCE") "Binance en lecture seule" else "Bybit : Spot uniquement, ordre réel seulement après ton appui sur CONFIRMER"} • $alerts alerte(s) active(s).",
             green
         ))
         attach(page)
@@ -484,7 +494,7 @@ class MainActivityV4 : Activity() {
 
     private fun orderPlanComposer(notesContainer: LinearLayout): View {
         val box = card()
-        box.addView(infoBanner("Brouillon uniquement", "Cette fiche prépare un ordre. Elle n'envoie rien à Bybit ou Binance dans la v0.4.", orange))
+        box.addView(infoBanner("Brouillon manuel", "Cette fiche de notes ne passe aucun ordre. Pour les vrais ordres préparés à confirmer, utilise l'onglet Ordres.", orange))
         val asset = input("Actif / paire : RENDERUSDC")
         val price = input("Prix limite")
         val amount = input("Montant ou quantité")
@@ -645,7 +655,7 @@ class MainActivityV4 : Activity() {
             if (isBinance)
                 "Binance doit rester en lecture seule. Les clés sont chiffrées avec Android Keystore et ne sont jamais envoyées à GitHub."
             else
-                "Bybit peut avoir la permission Trader Spot. La v0.4 ne contient encore aucune fonction d'envoi d'ordre : les plans restent des brouillons.",
+                "Bybit SpotTrade est autorisé. Un ordre réel n'est envoyé qu'après ton appui explicite sur CONFIRMER dans l'onglet Ordres.",
             if (isBinance) yellow else orange
         ))
 
@@ -674,7 +684,7 @@ class MainActivityV4 : Activity() {
         page.addView(settingRow("Clés API", "Chiffrées localement avec Android Keystore", "ACTIF"))
         page.addView(settingRow("Retraits", "Aucune fonction de retrait dans l'application", "BLOQUÉ"))
         page.addView(settingRow("Transferts", "Aucune fonction de transfert dans l'application", "BLOQUÉ"))
-        page.addView(settingRow("Ordres Bybit", "Spot Limit + confirmation e-mail prévu pour la prochaine étape", "À VENIR"))
+        page.addView(settingRow("Ordres Bybit", "Spot MARKET/LIMIT • confirmation utilisateur obligatoire", if (isBinance) "BYBIT" else "ACTIF"))
         attach(page)
     }
 
@@ -787,6 +797,7 @@ class MainActivityV4 : Activity() {
                 val apiInfo = result[3] as String
                 saveSnapshot("BYBIT", portfolio)
                 prefs.edit().putString(historyKey("BYBIT"), history).putString("bybit_sync_state", "OK • $at").putString("bybit_api_info", apiInfo).apply()
+                TradeProposalReceiver.checkNow(this)
                 Toast.makeText(this, "Bybit synchronisé", Toast.LENGTH_SHORT).show()
                 rebuildUi()
             },
