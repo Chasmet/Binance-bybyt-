@@ -3,12 +3,17 @@ package com.chk.binancebybit
 import android.app.Activity
 import android.app.Application
 import android.content.Intent
+import android.graphics.Color
+import android.graphics.Typeface
+import android.graphics.drawable.GradientDrawable
 import android.os.Bundle
 import android.view.View
 import android.view.ViewGroup
 import android.widget.Button
 import android.widget.FrameLayout
 import android.widget.LinearLayout
+import android.widget.ScrollView
+import android.widget.TextView
 
 object OrdersRoute {
     @Volatile
@@ -26,15 +31,24 @@ object OrdersRoute {
 
     fun install(application: Application) {
         application.registerActivityLifecycleCallbacks(object : Application.ActivityLifecycleCallbacks {
+            override fun onActivityCreated(activity: Activity, savedInstanceState: Bundle?) {
+                if (activity is MainActivityV4) {
+                    activity.window.decorView.viewTreeObserver.addOnGlobalLayoutListener {
+                        augmentSettings(activity)
+                    }
+                }
+            }
+
             override fun onActivityResumed(activity: Activity) {
                 if (activity !is MainActivityV4) return
                 val section = readStringField(activity, "section")
                 if (consumeRequest() || section == "ORDERS") {
                     activity.window.decorView.post { showIntegratedOrders(activity) }
+                } else {
+                    activity.window.decorView.post { augmentSettings(activity) }
                 }
             }
 
-            override fun onActivityCreated(activity: Activity, savedInstanceState: Bundle?) = Unit
             override fun onActivityStarted(activity: Activity) = Unit
             override fun onActivityPaused(activity: Activity) = Unit
             override fun onActivityStopped(activity: Activity) = Unit
@@ -51,10 +65,11 @@ object OrdersRoute {
             val contentField = MainActivityV4::class.java.getDeclaredField("content").apply { isAccessible = true }
             val content = contentField.get(activity) as FrameLayout
             val root = content.parent as? LinearLayout
+            val secureStore = SecureStore(activity)
 
             content.removeAllViews()
             content.addView(
-                TradeOrdersPanel(activity, SecureStore(activity), WorkspaceSync(activity, SecureStore(activity))).build(),
+                TradeOrdersPanel(activity, secureStore, WorkspaceSync(activity, secureStore)).build(),
                 FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT)
             )
 
@@ -63,6 +78,60 @@ object OrdersRoute {
                 replaceExchangeSelector(activity, root, 1)
                 replaceMainChild(activity, root, root.childCount - 1, "buildBottomNav")
             }
+        }
+    }
+
+    private fun augmentSettings(activity: MainActivityV4) {
+        if (readStringField(activity, "section") != "SETTINGS") return
+        runCatching {
+            val contentField = MainActivityV4::class.java.getDeclaredField("content").apply { isAccessible = true }
+            val content = contentField.get(activity) as? FrameLayout ?: return
+            val scroll = content.getChildAt(0) as? ScrollView ?: return
+            val page = scroll.getChildAt(0) as? LinearLayout ?: return
+            if (page.findViewWithTag<View>(BACKUP_TAG) != null) return
+
+            val density = activity.resources.displayMetrics.density
+            fun dp(v: Int) = (v * density).toInt()
+            fun rounded(fill: Int, stroke: Int): GradientDrawable = GradientDrawable().apply {
+                shape = GradientDrawable.RECTANGLE
+                setColor(fill)
+                cornerRadius = dp(16).toFloat()
+                setStroke(dp(1), stroke)
+            }
+
+            val container = LinearLayout(activity).apply {
+                tag = BACKUP_TAG
+                orientation = LinearLayout.VERTICAL
+                setPadding(dp(14), dp(14), dp(14), dp(14))
+                background = rounded(Color.rgb(20, 23, 28), Color.rgb(48, 54, 64))
+                layoutParams = LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply {
+                    setMargins(0, dp(10), 0, dp(8))
+                }
+            }
+            container.addView(TextView(activity).apply {
+                text = "Sauvegarde de secours"
+                textSize = 14f
+                setTextColor(Color.rgb(246, 247, 249))
+                setTypeface(Typeface.DEFAULT, Typeface.BOLD)
+            })
+            container.addView(TextView(activity).apply {
+                text = "Exporte ou restaure les clés API et l'identité CHK Crypto dans un fichier chiffré par mot de passe."
+                textSize = 11f
+                setTextColor(Color.rgb(153, 162, 174))
+                setPadding(0, dp(4), 0, dp(8))
+            })
+            container.addView(Button(activity).apply {
+                text = "SAUVEGARDE / RESTAURATION CHIFFRÉE"
+                isAllCaps = false
+                textSize = 12f
+                setTypeface(Typeface.DEFAULT, Typeface.BOLD)
+                setTextColor(Color.BLACK)
+                background = rounded(Color.rgb(245, 142, 30), Color.rgb(245, 142, 30))
+                setOnClickListener {
+                    activity.startActivity(Intent(activity, BackupActivity::class.java))
+                }
+            }, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(50)))
+            page.addView(container)
         }
     }
 
@@ -127,6 +196,8 @@ object OrdersRoute {
         val method = MainActivityV4::class.java.getDeclaredMethod(name).apply { isAccessible = true }
         method.invoke(activity)
     }
+
+    private const val BACKUP_TAG = "chk_crypto_backup_controls"
 }
 
 class ChkCryptoApplication : Application() {
