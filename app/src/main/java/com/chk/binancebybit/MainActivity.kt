@@ -377,7 +377,7 @@ class MainActivity : Activity() {
     private fun attachPage(page: LinearLayout) {
         val scroll = ScrollView(this).apply {
             isFillViewport = true
-            addView(page, ScrollView.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT))
+            addView(page, ViewGroup.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT))
         }
         content.addView(scroll, FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT))
     }
@@ -436,7 +436,7 @@ class MainActivity : Activity() {
         setTextColor(fgColor)
         setBackgroundColor(cardColor)
         textSize = 15f
-        singleLine = true
+        setSingleLine(true)
         setPadding(dp(14), dp(12), dp(14), dp(12))
         if (secret) inputType = InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_VARIATION_PASSWORD
         layoutParams = LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(54)).apply {
