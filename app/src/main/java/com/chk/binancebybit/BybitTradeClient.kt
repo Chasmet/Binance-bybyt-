@@ -69,6 +69,7 @@ class BybitTradeClient(
             val baseQty = when {
                 proposal.side == "SELL" -> proposal.baseQuantity
                     ?: throw IllegalStateException("Quantité de token manquante pour la vente")
+                proposal.orderType == "LIMIT" && proposal.baseQuantity != null -> proposal.baseQuantity
                 else -> {
                     val p = proposal.limitPrice ?: throw IllegalStateException("Prix LIMIT manquant")
                     proposal.quoteAmountUsdc / p
