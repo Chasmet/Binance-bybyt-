@@ -69,7 +69,7 @@ object OrdersRoute {
 
             content.removeAllViews()
             content.addView(
-                TradeOrdersPanel(activity, secureStore, WorkspaceSync(activity, secureStore)).build(),
+                CancelAwareTradeOrdersPanel(activity, secureStore, WorkspaceSync(activity, secureStore)).build(),
                 FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT)
             )
 
