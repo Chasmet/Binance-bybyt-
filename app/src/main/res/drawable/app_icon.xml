@@ -4,39 +4,11 @@
     android:height="108dp"
     android:viewportWidth="108"
     android:viewportHeight="108">
-
-    <path
-        android:fillColor="#08090D"
-        android:pathData="M0,0h108v108H0z" />
-
-    <path
-        android:fillColor="#15171E"
-        android:strokeColor="#F4B62A"
-        android:strokeWidth="3"
-        android:pathData="M54,9 L89,22 L86,67 C83,82 70,94 54,100 C38,94 25,82 22,67 L19,22 Z" />
-
-    <path
-        android:fillColor="#F4B62A"
-        android:pathData="M35,19 L41,29 L29,29 Z M54,14 L61,28 L47,28 Z M73,19 L79,29 L67,29 Z" />
-
-    <path
-        android:fillColor="#F4B62A"
-        android:pathData="M28,38h16v5H33v17h11v5H28z" />
-
-    <path
-        android:fillColor="#FFFFFF"
-        android:pathData="M47,38h5v10h8V38h5v27h-5V54h-8v11h-5z" />
-
-    <path
-        android:fillColor="#FF8A1F"
-        android:pathData="M68,38h5v10l9,-10h7l-11,13l12,14h-7L73,54v11h-5z" />
-
-    <path
-        android:fillColor="#F4B62A"
-        android:pathData="M31,77 L43,70 L52,75 L63,64 L72,69 L84,57 L84,65 L73,76 L64,71 L53,83 L43,78 L31,85 Z" />
-
-    <path
-        android:fillColor="#FFFFFF"
-        android:fillAlpha="0.16"
-        android:pathData="M24,25 L54,14 L84,25 L82,31 L54,22 L26,31 Z" />
+    <path android:fillColor="#08090D" android:pathData="M0,0h108v108H0z" />
+    <path android:fillColor="#15171E" android:strokeColor="#F4B62A" android:strokeWidth="3" android:pathData="M54,9 L89,22 L86,67 C83,82 70,94 54,100 C38,94 25,82 22,67 L19,22 Z" />
+    <path android:fillColor="#F4B62A" android:pathData="M35,19 L41,29 L29,29 Z M54,14 L61,28 L47,28 Z M73,19 L79,29 L67,29 Z" />
+    <path android:fillColor="#F4B62A" android:pathData="M28,38h16v5H33v17h11v5H28z" />
+    <path android:fillColor="#FFFFFF" android:pathData="M47,38h5v10h8V38h5v27h-5V54h-8v11h-5z" />
+    <path android:fillColor="#FF8A1F" android:pathData="M68,38h5v10l9,-10h7l-11,13l12,14h-7L73,54v11h-5z" />
+    <path android:fillColor="#F4B62A" android:pathData="M31,77 L43,70 L52,75 L63,64 L72,69 L84,57 L84,65 L73,76 L64,71 L53,83 L43,78 L31,85 Z" />
 </vector>
