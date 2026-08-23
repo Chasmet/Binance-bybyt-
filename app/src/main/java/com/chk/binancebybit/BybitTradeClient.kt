@@ -34,7 +34,9 @@ class BybitTradeClient(
 
         val instrument = instrumentInfo(proposal.symbol)
         val lotSizeFilter = instrument.optJSONObject("lotSizeFilter")
-        val qtyStep = lotSizeFilter?.optString("qtyStep", "0") ?: "0"
+        val qtyStepRaw = lotSizeFilter?.optString("qtyStep", "0") ?: "0"
+        val basePrecision = lotSizeFilter?.optString("basePrecision", "0") ?: "0"
+        val qtyStep = firstPositiveStep(qtyStepRaw, basePrecision)
         val minOrderQty = lotSizeFilter?.optString("minOrderQty", "0")?.toDoubleOrNull() ?: 0.0
         val minOrderAmt = lotSizeFilter?.optString("minOrderAmt", "0")?.toDoubleOrNull() ?: 0.0
         val tickSize = instrument.optJSONObject("priceFilter")?.optString("tickSize", "0") ?: "0"
@@ -299,6 +301,13 @@ class BybitTradeClient(
         if (s <= BigDecimal.ZERO) return v.stripTrailingZeros().toPlainString()
         val units = v.divide(s, 0, RoundingMode.FLOOR)
         return units.multiply(s).stripTrailingZeros().toPlainString()
+    }
+
+    private fun firstPositiveStep(vararg candidates: String): String {
+        return candidates.firstOrNull {
+            val value = it.toBigDecimalOrNull()
+            value != null && value > BigDecimal.ZERO
+        } ?: "0"
     }
 
     private fun decimal(value: Double): String = BigDecimal.valueOf(value).setScale(8, RoundingMode.DOWN).stripTrailingZeros().toPlainString()
