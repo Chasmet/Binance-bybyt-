@@ -10,6 +10,8 @@ class AnalysisInitProvider : ContentProvider() {
     override fun onCreate(): Boolean {
         val app = context?.applicationContext as? Application ?: return false
         AnalysisRoute.install(app)
+        ExperienceRoute.install(app)
+        MarketWatchService.createChannels(app)
         return true
     }
 
