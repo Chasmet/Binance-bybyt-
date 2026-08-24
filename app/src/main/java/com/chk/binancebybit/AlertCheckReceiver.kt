@@ -50,13 +50,14 @@ class AlertCheckReceiver : BroadcastReceiver() {
                     "Alertes prix CHK Crypto",
                     NotificationManager.IMPORTANCE_HIGH
                 ).apply {
-                    description = "Alertes locales calculées sur le téléphone depuis les prix publics Bybit."
+                    description = "Alertes CHK Crypto synchronisées depuis le MCP et calculées localement depuis les prix publics Bybit."
                     enableVibration(true)
                 })
             }
         }
 
         private fun checkAlerts(context: Context) {
+            runCatching { RemoteAlertClient(context).syncIntoLocal() }
             val store = LocalAlertStore(context)
             val client = BybitPublicMarketClient()
             val alerts = store.list().filter { it.enabled }
@@ -67,7 +68,7 @@ class AlertCheckReceiver : BroadcastReceiver() {
                     val hit = if (alert.condition == "above") ticker.lastPrice >= alert.targetPrice else ticker.lastPrice <= alert.targetPrice
                     if (hit) {
                         notifyAlert(context, alert, ticker.lastPrice)
-                        store.markTriggered(alert.id, disableAfterTrigger = true)
+                        store.markTriggered(alert.id, disableAfterTrigger = true, lastPrice = ticker.lastPrice)
                     }
                 }
             }
@@ -88,7 +89,7 @@ class AlertCheckReceiver : BroadcastReceiver() {
             val notification = builder.setSmallIcon(R.drawable.app_icon)
                 .setContentTitle(title)
                 .setContentText(msg)
-                .setStyle(Notification.BigTextStyle().bigText("$msg\nAlerte calculée localement sur ce téléphone. Ouvre CHK Crypto pour revoir le marché."))
+                .setStyle(Notification.BigTextStyle().bigText("$msg\nAlerte calculée localement sur ce téléphone depuis une règle CHK Crypto."))
                 .setContentIntent(content)
                 .setAutoCancel(true)
                 .setPriority(Notification.PRIORITY_HIGH)
