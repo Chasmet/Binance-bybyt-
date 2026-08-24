@@ -155,7 +155,6 @@ class CandlestickChartView(context: Context) : View(context) {
         val lo = minPrice0 - range0 * 0.08
         val priceRange = (hi - lo).coerceAtLeast(1e-12)
         fun y(price: Double): Float = (priceBottom - ((price - lo) / priceRange * (priceBottom - top))).toFloat()
-        fun priceAtY(py: Float): Double = lo + ((priceBottom - py) / (priceBottom - top)).coerceIn(0f, 1f) * priceRange
         val cell = (right - left) / candles.size
 
         for (i in 0..5) {
@@ -174,12 +173,12 @@ class CandlestickChartView(context: Context) : View(context) {
             canvas.drawText(label, (xx - w / 2f).coerceAtLeast(left), timeY, axisText)
         }
 
-        drawHorizontalLevel(canvas, s.support, left, right, lo, hi, y, supportPaint, "S ${format(s.support)}")
-        drawHorizontalLevel(canvas, s.resistance, left, right, lo, hi, y, resistancePaint, "R ${format(s.resistance)}")
+        drawHorizontalLevel(canvas, s.support, left, right, lo, hi, ::y, supportPaint, "S ${format(s.support)}")
+        drawHorizontalLevel(canvas, s.resistance, left, right, lo, hi, ::y, resistancePaint, "R ${format(s.resistance)}")
         orderLevels.forEach { level ->
             val paint = if (level.side.uppercase(Locale.US) == "BUY") orderBuyPaint else orderSellPaint
             val prefix = if (level.side.uppercase(Locale.US) == "BUY") "BUY" else "SELL"
-            drawHorizontalLevel(canvas, level.price, left, right, lo, hi, y, paint, level.label.ifBlank { "$prefix ${format(level.price)}" })
+            drawHorizontalLevel(canvas, level.price, left, right, lo, hi, ::y, paint, level.label.ifBlank { "$prefix ${format(level.price)}" })
         }
 
         val maxVol = candles.maxOf { it.volume }.coerceAtLeast(1e-12)
@@ -300,7 +299,8 @@ class CandlestickChartView(context: Context) : View(context) {
         val range0 = (maxPrice0 - minPrice0).coerceAtLeast(maxPrice0 * 0.0005).coerceAtLeast(1e-12)
         val hi = maxPrice0 + range0 * 0.08
         val lo = minPrice0 - range0 * 0.08
-        selectedPrice = lo + ((priceBottom - y) / (priceBottom - top)).coerceIn(0f, 1f) * (hi - lo)
+        val ratio = ((priceBottom - y) / (priceBottom - top)).coerceIn(0f, 1f).toDouble()
+        selectedPrice = lo + ratio * (hi - lo)
         invalidate()
     }
 
