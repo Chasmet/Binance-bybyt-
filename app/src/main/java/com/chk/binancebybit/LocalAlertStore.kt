@@ -4,6 +4,7 @@ import android.content.Context
 import org.json.JSONArray
 import org.json.JSONObject
 import java.util.UUID
+import java.util.concurrent.atomic.AtomicBoolean
 
 data class LocalMarketAlert(
     val id: String,
@@ -17,8 +18,37 @@ data class LocalMarketAlert(
 )
 
 class LocalAlertStore(context: Context) {
+    private val ownerContext = context
     private val appContext = context.applicationContext
     private val prefs = appContext.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
+
+    init {
+        maybeRefreshRemote()
+    }
+
+    private fun maybeRefreshRemote() {
+        val now = System.currentTimeMillis()
+        if (now - remoteSyncLastAt < 20_000L || !remoteSyncRunning.compareAndSet(false, true)) return
+        Thread {
+            var changed = false
+            try {
+                changed = RemoteAlertClient(appContext).syncIntoLocal()
+            } catch (_: Exception) {
+            } finally {
+                remoteSyncLastAt = System.currentTimeMillis()
+                remoteSyncRunning.set(false)
+            }
+            if (changed && ownerContext is MainActivityV4) {
+                ownerContext.runOnUiThread {
+                    val refreshed = LocalAlertStore(ownerContext)
+                    if (refreshed.activeCount() > 0 && !refreshed.monitoringEnabled()) {
+                        runCatching { MarketWatchService.start(ownerContext) }
+                    }
+                    ExperienceRoute.refreshCurrent(ownerContext)
+                }
+            }
+        }.apply { name = "CHK-AlertSync"; isDaemon = true; start() }
+    }
 
     @Synchronized
     fun list(): List<LocalMarketAlert> {
@@ -171,5 +201,7 @@ class LocalAlertStore(context: Context) {
         private const val KEY_MONITORING = "local_market_monitoring_enabled"
         private const val KEY_SMART_WATCH = "local_smart_watch_enabled"
         private const val KEY_SMART_MOVE_PCT = "local_smart_move_pct"
+        private val remoteSyncRunning = AtomicBoolean(false)
+        @Volatile private var remoteSyncLastAt = 0L
     }
 }
