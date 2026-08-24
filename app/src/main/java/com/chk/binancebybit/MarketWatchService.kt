@@ -22,6 +22,7 @@ class MarketWatchService : Service() {
     private val smartCooldown = ConcurrentHashMap<String, Long>()
     private var worker: Thread? = null
     private var wakeLock: PowerManager.WakeLock? = null
+    private var lastRemoteSyncAt = 0L
 
     override fun onCreate() {
         super.onCreate()
@@ -71,6 +72,12 @@ class MarketWatchService : Service() {
     }
 
     private fun checkMarketOnce() {
+        val now = System.currentTimeMillis()
+        if (now - lastRemoteSyncAt >= 60_000L) {
+            runCatching { RemoteAlertClient(this).syncIntoLocal() }
+            lastRemoteSyncAt = now
+        }
+
         val store = LocalAlertStore(this)
         val alerts = store.list().filter { it.enabled }
         val symbols = linkedSetOf<String>()
@@ -91,7 +98,7 @@ class MarketWatchService : Service() {
                     }
                     if (hit) {
                         notifyTarget(alert, ticker.lastPrice)
-                        store.markTriggered(alert.id, disableAfterTrigger = true)
+                        store.markTriggered(alert.id, disableAfterTrigger = true, lastPrice = ticker.lastPrice)
                     }
                 }
             }
@@ -168,7 +175,7 @@ class MarketWatchService : Service() {
         val n = b.setSmallIcon(R.drawable.app_icon)
             .setContentTitle(title)
             .setContentText(body)
-            .setStyle(Notification.BigTextStyle().bigText("$body\nOuvre CHK Crypto puis lance bybit24hsmarttrader si tu veux une nouvelle analyse."))
+            .setStyle(Notification.BigTextStyle().bigText("$body\nOuvre CHK Crypto pour revoir le marché."))
             .setContentIntent(pi)
             .setAutoCancel(true)
             .setPriority(Notification.PRIORITY_HIGH)
@@ -186,7 +193,7 @@ class MarketWatchService : Service() {
         val b = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) Notification.Builder(this, SERVICE_CHANNEL) else @Suppress("DEPRECATION") Notification.Builder(this)
         return b.setSmallIcon(R.drawable.app_icon)
             .setContentTitle("CHK Crypto • surveillance active")
-            .setContentText("$active alarme(s) locale(s) • Bybit public • zéro Render")
+            .setContentText("$active alarme(s) CHK • synchronisation MCP + prix Bybit public")
             .setContentIntent(open)
             .setOngoing(true)
             .setOnlyAlertOnce(true)
@@ -216,10 +223,10 @@ class MarketWatchService : Service() {
             if (Build.VERSION.SDK_INT < Build.VERSION_CODES.O) return
             val nm = context.getSystemService(Context.NOTIFICATION_SERVICE) as? NotificationManager ?: return
             nm.createNotificationChannel(NotificationChannel(SERVICE_CHANNEL, "Surveillance marché CHK Crypto", NotificationManager.IMPORTANCE_LOW).apply {
-                description = "Notification permanente lorsque la surveillance locale du marché est active."
+                description = "Notification permanente lorsque la surveillance CHK Crypto du marché est active."
             })
-            nm.createNotificationChannel(NotificationChannel(ALERT_CHANNEL, "Alertes marché locales CHK Crypto", NotificationManager.IMPORTANCE_HIGH).apply {
-                description = "Alertes de prix et mouvements importants calculés directement sur le téléphone."
+            nm.createNotificationChannel(NotificationChannel(ALERT_CHANNEL, "Alertes marché CHK Crypto", NotificationManager.IMPORTANCE_HIGH).apply {
+                description = "Alarmes synchronisées via le MCP et surveillées directement sur le téléphone."
                 enableVibration(true)
             })
         }
