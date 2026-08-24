@@ -17,7 +17,8 @@ data class LocalMarketAlert(
 )
 
 class LocalAlertStore(context: Context) {
-    private val prefs = context.applicationContext.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
+    private val appContext = context.applicationContext
+    private val prefs = appContext.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
 
     @Synchronized
     fun list(): List<LocalMarketAlert> {
@@ -65,21 +66,47 @@ class LocalAlertStore(context: Context) {
     }
 
     @Synchronized
+    fun replaceRemote(items: List<LocalMarketAlert>): Boolean {
+        val before = list()
+        val oldRemoteIds = remoteIds()
+        val newRemoteIds = items.map { it.id }.filter { it.isNotBlank() }.toSet()
+        val localOnly = before.filterNot { oldRemoteIds.contains(it.id) }
+        val merged = (localOnly + items).distinctBy { it.id }
+        val changed = before.sortedBy { it.id } != merged.sortedBy { it.id } || oldRemoteIds != newRemoteIds
+        if (changed) save(merged)
+        prefs.edit().putStringSet(KEY_REMOTE_IDS, newRemoteIds).apply()
+        return changed
+    }
+
+    fun isRemote(id: String): Boolean = remoteIds().contains(id)
+
+    @Synchronized
     fun setEnabled(id: String, enabled: Boolean) {
+        val remote = isRemote(id)
         save(list().map { if (it.id == id) it.copy(enabled = enabled) else it })
+        if (remote) Thread { runCatching { RemoteAlertClient(appContext).setEnabled(id, enabled) } }.start()
     }
 
     @Synchronized
     fun delete(id: String) {
+        val remote = isRemote(id)
         save(list().filterNot { it.id == id })
+        if (remote) {
+            prefs.edit().putStringSet(KEY_REMOTE_IDS, remoteIds() - id).apply()
+            Thread { runCatching { RemoteAlertClient(appContext).delete(id) } }.start()
+        }
     }
 
     @Synchronized
-    fun markTriggered(id: String, disableAfterTrigger: Boolean = true) {
+    fun markTriggered(id: String, disableAfterTrigger: Boolean = true, lastPrice: Double? = null) {
+        val remote = isRemote(id)
         val now = System.currentTimeMillis()
         save(list().map {
             if (it.id == id) it.copy(lastTriggeredAt = now, enabled = if (disableAfterTrigger) false else it.enabled) else it
         })
+        if (remote && lastPrice != null && lastPrice > 0.0) {
+            Thread { runCatching { RemoteAlertClient(appContext).trigger(id, lastPrice) } }.start()
+        }
     }
 
     fun activeCount(): Int = list().count { it.enabled }
@@ -101,6 +128,8 @@ class LocalAlertStore(context: Context) {
     fun setSmartMoveThresholdPct(value: Double) {
         prefs.edit().putFloat(KEY_SMART_MOVE_PCT, value.coerceIn(0.5, 20.0).toFloat()).apply()
     }
+
+    private fun remoteIds(): Set<String> = prefs.getStringSet(KEY_REMOTE_IDS, emptySet())?.toSet() ?: emptySet()
 
     @Synchronized
     private fun save(items: List<LocalMarketAlert>) {
@@ -138,6 +167,7 @@ class LocalAlertStore(context: Context) {
     companion object {
         private const val PREFS = "chk_workspace"
         private const val KEY_ALERTS = "local_market_alerts_v1"
+        private const val KEY_REMOTE_IDS = "remote_market_alert_ids_v1"
         private const val KEY_MONITORING = "local_market_monitoring_enabled"
         private const val KEY_SMART_WATCH = "local_smart_watch_enabled"
         private const val KEY_SMART_MOVE_PCT = "local_smart_move_pct"
