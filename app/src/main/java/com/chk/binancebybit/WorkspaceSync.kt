@@ -31,7 +31,7 @@ class WorkspaceSync(private val context: Context, private val secureStore: Secur
             put("deviceId", identity.deviceId)
             put("deviceSecret", identity.deviceSecret)
             put("accountFingerprint", sha256(apiKey))
-            put("appVersion", BuildConfig.VERSION_NAME)
+            put("appVersion", appVersion())
             put("snapshot", snapshot)
         }
         val response = postJson(BINANCE_SYNC_URL, body)
@@ -50,7 +50,7 @@ class WorkspaceSync(private val context: Context, private val secureStore: Secur
             put("deviceSecret", identity.deviceSecret)
             put("exchange", exchange)
             put("accountFingerprint", sha256(apiKey))
-            put("appVersion", BuildConfig.VERSION_NAME)
+            put("appVersion", appVersion())
             put("snapshot", snapshot)
         }
         val response = postJson(CRYPTO_SYNC_URL, body)
@@ -112,6 +112,10 @@ class WorkspaceSync(private val context: Context, private val secureStore: Secur
             connection.disconnect()
         }
     }
+
+    private fun appVersion(): String = runCatching {
+        context.packageManager.getPackageInfo(context.packageName, 0).versionName ?: "unknown"
+    }.getOrDefault("unknown")
 
     private fun sha256(value: String): String = MessageDigest.getInstance("SHA-256")
         .digest(value.toByteArray(StandardCharsets.UTF_8))
