@@ -52,6 +52,7 @@ class LocalAlertsPanel(private val activity: Activity) {
             setPadding(0, dp(2), 0, dp(10))
         })
 
+        page.addView(RemoteAlertSyncCard(activity).build())
         page.addView(monitoringCard())
         page.addView(createCard())
 
@@ -65,7 +66,7 @@ class LocalAlertsPanel(private val activity: Activity) {
 
         val alerts = store.list().sortedByDescending { it.createdAt }
         if (alerts.isEmpty()) {
-            page.addView(infoCard("Aucune alarme", "Crée une alarme ici ou fais un appui long sur le graphique Analyse."))
+            page.addView(infoCard("Aucune alarme", "Appuie sur SYNCHRONISER MCP pour importer les alarmes créées par ChatGPT, ou crée une alarme locale ici."))
         } else {
             alerts.forEach { page.addView(alertCard(it)) }
         }
