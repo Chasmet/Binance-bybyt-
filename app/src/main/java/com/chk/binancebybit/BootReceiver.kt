@@ -10,5 +10,9 @@ class BootReceiver : BroadcastReceiver() {
         AlertCheckReceiver.schedule(app)
         TradeProposalReceiver.createChannel(app)
         TradeProposalReceiver.schedule(app)
+        MarketWatchService.createChannels(app)
+        if (LocalAlertStore(app).monitoringEnabled()) {
+            runCatching { MarketWatchService.start(app) }
+        }
     }
 }
