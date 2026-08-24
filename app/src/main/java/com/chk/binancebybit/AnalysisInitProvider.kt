@@ -9,7 +9,6 @@ import android.net.Uri
 class AnalysisInitProvider : ContentProvider() {
     override fun onCreate(): Boolean {
         val app = context?.applicationContext as? Application ?: return false
-        AnalysisRoute.install(app)
         ExperienceRoute.install(app)
         MarketWatchService.createChannels(app)
         return true
@@ -19,5 +18,5 @@ class AnalysisInitProvider : ContentProvider() {
     override fun getType(uri: Uri): String? = null
     override fun insert(uri: Uri, values: ContentValues?): Uri? = null
     override fun delete(uri: Uri, selection: String?, selectionArgs: Array<out String>?): Int = 0
-    override fun update(uri: Uri, values: ContentValues?, selection: String?, selectionArgs: Array<out String>?): Int = 0
+    override fun update(uri: Uri, values: ContentValues?): Int = 0
 }
