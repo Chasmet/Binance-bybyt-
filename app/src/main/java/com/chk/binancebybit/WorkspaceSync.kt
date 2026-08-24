@@ -31,7 +31,7 @@ class WorkspaceSync(private val context: Context, private val secureStore: Secur
             put("deviceId", identity.deviceId)
             put("deviceSecret", identity.deviceSecret)
             put("accountFingerprint", sha256(apiKey))
-            put("appVersion", "local-keys-v0.6.2")
+            put("appVersion", BuildConfig.VERSION_NAME)
             put("snapshot", snapshot)
         }
         val response = postJson(BINANCE_SYNC_URL, body)
@@ -50,7 +50,7 @@ class WorkspaceSync(private val context: Context, private val secureStore: Secur
             put("deviceSecret", identity.deviceSecret)
             put("exchange", exchange)
             put("accountFingerprint", sha256(apiKey))
-            put("appVersion", "local-keys-v0.6.2")
+            put("appVersion", BuildConfig.VERSION_NAME)
             put("snapshot", snapshot)
         }
         val response = postJson(CRYPTO_SYNC_URL, body)
