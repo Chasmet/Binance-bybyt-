@@ -72,20 +72,40 @@ class MarketAnalysisClient {
     fun load(exchange: String, symbol: String, interval: String, limit: Int = 220): IndicatorSnapshot {
         val normalizedExchange = exchange.uppercase(Locale.US)
         val requested = normalizeSymbol(symbol)
+        val tf = ChartSessionState.normalizeTimeframe(interval)
         val (sourceSymbol, candles) = when (normalizedExchange) {
-            "BINANCE" -> loadBinanceWithFallback(requested, interval, limit)
-            else -> requested to loadBybit(requested, interval, limit)
+            "BINANCE" -> loadBinanceWithFallback(requested, tf, limit)
+            else -> requested to loadBybit(requested, tf, limit)
         }
         if (candles.size < 60) throw IllegalStateException("Pas assez de bougies pour analyser $sourceSymbol.")
-        return analyze(normalizedExchange, requested, sourceSymbol, interval, candles)
+        return analyze(normalizedExchange, requested, sourceSymbol, tf, candles)
     }
 
     private fun loadBybit(symbol: String, interval: String, limit: Int): List<MarketCandle> {
+        if (interval == "3d") {
+            val daily = loadBybitRaw(symbol, "D", (limit.coerceIn(60, 330) * 3).coerceAtMost(1000))
+            return aggregateThreeDays(daily).takeLast(limit.coerceIn(60, 1000))
+        }
         val bybitInterval = when (interval) {
-            "1m" -> "1"; "5m" -> "5"; "15m" -> "15"; "1h" -> "60"; "4h" -> "240"; "1d" -> "D"; "1w" -> "W"
+            "1m" -> "1"
+            "3m" -> "3"
+            "5m" -> "5"
+            "15m" -> "15"
+            "30m" -> "30"
+            "1h" -> "60"
+            "2h" -> "120"
+            "4h" -> "240"
+            "6h" -> "360"
+            "12h" -> "720"
+            "1d" -> "D"
+            "1w" -> "W"
             else -> "60"
         }
-        val url = "https://api.bybit.eu/v5/market/kline?category=spot&symbol=$symbol&interval=$bybitInterval&limit=${limit.coerceIn(60, 1000)}"
+        return loadBybitRaw(symbol, bybitInterval, limit.coerceIn(60, 1000))
+    }
+
+    private fun loadBybitRaw(symbol: String, interval: String, limit: Int): List<MarketCandle> {
+        val url = "https://api.bybit.eu/v5/market/kline?category=spot&symbol=$symbol&interval=$interval&limit=${limit.coerceIn(60, 1000)}"
         val root = getJson(url)
         val code = root.optInt("retCode", 0)
         if (code != 0) throw IllegalStateException("Bybit $code • ${root.optString("retMsg")}")
@@ -106,6 +126,27 @@ class MarketAnalysisClient {
         return out.sortedBy { it.time }
     }
 
+    private fun aggregateThreeDays(daily: List<MarketCandle>): List<MarketCandle> {
+        if (daily.isEmpty()) return emptyList()
+        val bucketMs = 3L * 24L * 60L * 60L * 1000L
+        return daily.groupBy { it.time / bucketMs }
+            .toSortedMap()
+            .values
+            .mapNotNull { group ->
+                val sorted = group.sortedBy { it.time }
+                val first = sorted.firstOrNull() ?: return@mapNotNull null
+                val last = sorted.last()
+                MarketCandle(
+                    time = first.time,
+                    open = first.open,
+                    high = sorted.maxOf { it.high },
+                    low = sorted.minOf { it.low },
+                    close = last.close,
+                    volume = sorted.sumOf { it.volume }
+                )
+            }
+    }
+
     private fun loadBinanceWithFallback(symbol: String, interval: String, limit: Int): Pair<String, List<MarketCandle>> {
         val candidates = linkedSetOf(symbol)
         if (symbol.endsWith("USDC")) candidates += symbol.removeSuffix("USDC") + "USDT"
@@ -118,7 +159,19 @@ class MarketAnalysisClient {
 
     private fun loadBinance(symbol: String, interval: String, limit: Int): List<MarketCandle> {
         val binanceInterval = when (interval) {
-            "1m" -> "1m"; "5m" -> "5m"; "15m" -> "15m"; "1h" -> "1h"; "4h" -> "4h"; "1d" -> "1d"; "1w" -> "1w"
+            "1m" -> "1m"
+            "3m" -> "3m"
+            "5m" -> "5m"
+            "15m" -> "15m"
+            "30m" -> "30m"
+            "1h" -> "1h"
+            "2h" -> "2h"
+            "4h" -> "4h"
+            "6h" -> "6h"
+            "12h" -> "12h"
+            "1d" -> "1d"
+            "3d" -> "3d"
+            "1w" -> "1w"
             else -> "1h"
         }
         val url = "https://api.binance.com/api/v3/klines?symbol=$symbol&interval=$binanceInterval&limit=${limit.coerceIn(60, 1000)}"
@@ -209,31 +262,21 @@ class MarketAnalysisClient {
         val out = ArrayList<Double>(values.size)
         val k = 2.0 / (period + 1.0)
         var current = values.first()
-        values.forEachIndexed { i, v ->
-            current = if (i == 0) v else v * k + current * (1.0 - k)
-            out += current
-        }
+        values.forEachIndexed { i, v -> current = if (i == 0) v else v * k + current * (1.0 - k); out += current }
         return out
     }
 
     private fun rsiSeries(values: List<Double>, period: Int): List<Double> {
         val out = MutableList(values.size) { 50.0 }
         if (values.size <= period) return out
-        var gains = 0.0
-        var losses = 0.0
-        for (i in 1..period) {
-            val d = values[i] - values[i - 1]
-            if (d >= 0) gains += d else losses -= d
-        }
-        var avgGain = gains / period
-        var avgLoss = losses / period
+        var gains = 0.0; var losses = 0.0
+        for (i in 1..period) { val d = values[i] - values[i - 1]; if (d >= 0) gains += d else losses -= d }
+        var avgGain = gains / period; var avgLoss = losses / period
         out[period] = if (avgLoss == 0.0) 100.0 else 100.0 - 100.0 / (1.0 + avgGain / avgLoss)
         for (i in period + 1 until values.size) {
             val d = values[i] - values[i - 1]
-            val g = max(d, 0.0)
-            val l = max(-d, 0.0)
-            avgGain = (avgGain * (period - 1) + g) / period
-            avgLoss = (avgLoss * (period - 1) + l) / period
+            avgGain = (avgGain * (period - 1) + max(d, 0.0)) / period
+            avgLoss = (avgLoss * (period - 1) + max(-d, 0.0)) / period
             out[i] = if (avgLoss == 0.0) 100.0 else 100.0 - 100.0 / (1.0 + avgGain / avgLoss)
         }
         for (i in 0 until period) out[i] = out[period]
@@ -248,30 +291,22 @@ class MarketAnalysisClient {
     }
 
     private fun macd(values: List<Double>): Triple<Double, Double, Double> {
-        val fast = emaSeries(values, 12)
-        val slow = emaSeries(values, 26)
-        val line = values.indices.map { fast[it] - slow[it] }
-        val signal = emaSeries(line, 9)
+        val fast = emaSeries(values, 12); val slow = emaSeries(values, 26)
+        val line = values.indices.map { fast[it] - slow[it] }; val signal = emaSeries(line, 9)
         return Triple(line.last(), signal.last(), line.last() - signal.last())
     }
 
     private fun atr(c: List<MarketCandle>, period: Int): Double {
         val tr = ArrayList<Double>()
-        for (i in 1 until c.size) {
-            tr += max(c[i].high - c[i].low, max(abs(c[i].high - c[i-1].close), abs(c[i].low - c[i-1].close)))
-        }
+        for (i in 1 until c.size) tr += max(c[i].high - c[i].low, max(abs(c[i].high - c[i-1].close), abs(c[i].low - c[i-1].close)))
         return tr.takeLast(period).average()
     }
 
     private fun divergence(closes: List<Double>, rsi: List<Double>): String {
         if (closes.size < 30) return "AUCUNE"
-        val a = closes.size - 25
-        val b = closes.size - 1
-        val mid = (a + b) / 2
-        val low1 = (a..mid).minByOrNull { closes[it] } ?: a
-        val low2 = (mid + 1..b).minByOrNull { closes[it] } ?: b
-        val high1 = (a..mid).maxByOrNull { closes[it] } ?: a
-        val high2 = (mid + 1..b).maxByOrNull { closes[it] } ?: b
+        val a = closes.size - 25; val b = closes.size - 1; val mid = (a + b) / 2
+        val low1 = (a..mid).minByOrNull { closes[it] } ?: a; val low2 = (mid + 1..b).minByOrNull { closes[it] } ?: b
+        val high1 = (a..mid).maxByOrNull { closes[it] } ?: a; val high2 = (mid + 1..b).maxByOrNull { closes[it] } ?: b
         return when {
             closes[low2] < closes[low1] && rsi[low2] > rsi[low1] + 2 -> "DIVERGENCE HAUSSIÈRE"
             closes[high2] > closes[high1] && rsi[high2] < rsi[high1] - 2 -> "DIVERGENCE BAISSIÈRE"
@@ -281,12 +316,8 @@ class MarketAnalysisClient {
 
     private fun detectPattern(c: List<MarketCandle>): String {
         if (c.size < 3) return "AUCUN"
-        val p = c[c.size - 2]
-        val x = c.last()
-        val body = abs(x.close - x.open)
-        val range = (x.high - x.low).coerceAtLeast(1e-12)
-        val lowerWick = min(x.open, x.close) - x.low
-        val upperWick = x.high - max(x.open, x.close)
+        val p = c[c.size - 2]; val x = c.last(); val body = abs(x.close - x.open); val range = (x.high - x.low).coerceAtLeast(1e-12)
+        val lowerWick = min(x.open, x.close) - x.low; val upperWick = x.high - max(x.open, x.close)
         return when {
             body / range < 0.12 -> "DOJI"
             lowerWick > body * 2.2 && upperWick < body -> "MARTEAU / REJET BAS"
@@ -303,23 +334,18 @@ class MarketAnalysisClient {
         val text = getText(urlText)
         if (text.trim().startsWith("{")) {
             val o = JSONObject(text)
-            val msg = o.optString("msg", o.optString("message", "Erreur API"))
-            throw IllegalStateException(msg)
+            throw IllegalStateException(o.optString("msg", o.optString("message", "Erreur API")))
         }
         return JSONArray(text)
     }
 
     private fun getText(urlText: String): String {
         val c = (URL(urlText).openConnection() as HttpURLConnection).apply {
-            requestMethod = "GET"
-            connectTimeout = 10000
-            readTimeout = 15000
-            setRequestProperty("Accept", "application/json")
-            setRequestProperty("User-Agent", "CHK-Crypto-Android")
+            requestMethod = "GET"; connectTimeout = 10000; readTimeout = 15000
+            setRequestProperty("Accept", "application/json"); setRequestProperty("User-Agent", "CHK-Crypto-Android")
         }
         return try {
-            val code = c.responseCode
-            val stream = if (code in 200..299) c.inputStream else c.errorStream
+            val code = c.responseCode; val stream = if (code in 200..299) c.inputStream else c.errorStream
             val text = stream?.bufferedReader()?.use { it.readText() } ?: ""
             if (code !in 200..299) throw IllegalStateException("HTTP $code • ${text.take(220)}")
             text
