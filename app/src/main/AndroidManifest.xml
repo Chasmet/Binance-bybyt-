@@ -34,6 +34,13 @@
         </activity>
 
         <activity
+            android:name=".ChartFullscreenActivity"
+            android:exported="false"
+            android:screenOrientation="sensor"
+            android:configChanges="orientation|screenSize"
+            android:theme="@android:style/Theme.Material.NoActionBar" />
+
+        <activity
             android:name=".TradeActivity"
             android:exported="false"
             android:excludeFromRecents="true"
