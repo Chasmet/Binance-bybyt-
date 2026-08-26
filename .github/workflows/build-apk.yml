@@ -88,15 +88,15 @@ jobs:
           APKSIGNER="$(find "$ANDROID_HOME/build-tools" -type f -name apksigner | sort -V | tail -n 1)"
           test -n "$APKSIGNER"
           "$APKSIGNER" verify --verbose --print-certs "$APK" | tee "$RUNNER_TEMP/chk-crypto-signing-certificate.txt"
-          cp "$APK" "app/build/outputs/apk/release/CHK-Crypto-v0.8.3-stable.apk"
+          cp "$APK" "app/build/outputs/apk/release/CHK-Crypto-v0.9.0-stable.apk"
 
       - name: Upload stable signed APK
         if: env.HAS_STABLE_SIGNING == 'true'
         uses: actions/upload-artifact@v4
         with:
-          name: CHK-Crypto-v0.8.3-stable-signed
+          name: CHK-Crypto-v0.9.0-stable-signed
           path: |
-            app/build/outputs/apk/release/CHK-Crypto-v0.8.3-stable.apk
+            app/build/outputs/apk/release/CHK-Crypto-v0.9.0-stable.apk
             ${{ runner.temp }}/chk-crypto-signing-certificate.txt
           if-no-files-found: error
           retention-days: 30
@@ -109,7 +109,7 @@ jobs:
         if: env.HAS_STABLE_SIGNING != 'true'
         uses: actions/upload-artifact@v4
         with:
-          name: CHK-Crypto-v0.8.3-debug-validation
+          name: CHK-Crypto-v0.9.0-debug-validation
           path: app/build/outputs/apk/debug/app-debug.apk
           if-no-files-found: error
           retention-days: 7
