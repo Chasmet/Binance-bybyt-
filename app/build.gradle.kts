@@ -35,8 +35,8 @@ android {
         applicationId = "com.chk.binancebybit"
         minSdk = 26
         targetSdk = 35
-        versionCode = 24
-        versionName = "0.8.3"
+        versionCode = 25
+        versionName = "0.9.0"
     }
 
     signingConfigs {
@@ -65,4 +65,8 @@ android {
     kotlinOptions {
         jvmTarget = "17"
     }
+}
+
+dependencies {
+    implementation("com.squareup.okhttp3:okhttp:4.12.0")
 }
