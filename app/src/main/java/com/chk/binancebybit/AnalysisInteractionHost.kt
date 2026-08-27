@@ -13,9 +13,49 @@ import android.view.View
 import android.view.ViewConfiguration
 import android.widget.FrameLayout
 import android.widget.ScrollView
+import java.lang.ref.WeakReference
 import kotlin.math.abs
 import kotlin.math.max
 import kotlin.math.min
+
+/**
+ * Remote navigation bridge used by MCP commands. It always targets the ScrollView
+ * that is currently attached to the Analyse tab, so ChatGPT manipulates the same
+ * vertical viewport and the same orange wheel as the user.
+ */
+object AnalysisRemoteNavigation {
+    @Volatile private var activeScroll: WeakReference<ScrollView>? = null
+
+    fun bind(scrollView: ScrollView) {
+        activeScroll = WeakReference(scrollView)
+    }
+
+    fun unbind(scrollView: ScrollView) {
+        if (activeScroll?.get() === scrollView) activeScroll = null
+    }
+
+    fun scroll(direction: String, pixels: Int = 0, position: Double? = null): Boolean {
+        val scroll = activeScroll?.get() ?: return false
+        scroll.post {
+            val childHeight = scroll.getChildAt(0)?.height ?: 0
+            val range = (childHeight - scroll.height + scroll.paddingTop + scroll.paddingBottom).coerceAtLeast(0)
+            val targetRatio = position?.takeIf { it.isFinite() }?.coerceIn(0.0, 1.0)
+            if (targetRatio != null) {
+                scroll.smoothScrollTo(0, (range * targetRatio).toInt())
+                return@post
+            }
+            val step = pixels.takeIf { it > 0 } ?: (scroll.height * 0.72f).toInt().coerceAtLeast(1)
+            when (direction.trim().lowercase()) {
+                "top" -> scroll.smoothScrollTo(0, 0)
+                "bottom" -> scroll.smoothScrollTo(0, range)
+                "up" -> scroll.smoothScrollBy(0, -step)
+                "down" -> scroll.smoothScrollBy(0, step)
+                else -> Unit
+            }
+        }
+        return true
+    }
+}
 
 /**
  * Touch coordinator for the Analyse tab.
@@ -58,6 +98,16 @@ class AnalysisInteractionHost(
                 marginEnd = dp(3)
             }
         )
+    }
+
+    override fun onAttachedToWindow() {
+        super.onAttachedToWindow()
+        AnalysisRemoteNavigation.bind(scrollView)
+    }
+
+    override fun onDetachedFromWindow() {
+        AnalysisRemoteNavigation.unbind(scrollView)
+        super.onDetachedFromWindow()
     }
 
     override fun dispatchTouchEvent(ev: MotionEvent): Boolean {
