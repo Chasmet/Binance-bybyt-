@@ -46,6 +46,17 @@ class ChartRemoteClient(context: Context) {
         val seq = root.optLong("seq", 0L)
         val command = root.optJSONObject("command") ?: return null
         if (seq <= 0L) return null
+
+        val op = command.optString("op").trim().lowercase()
+        if (op == "scroll_analysis_view" || op == "scroll_view") {
+            val args = command.optJSONObject("args") ?: JSONObject()
+            val position = args.optDouble("position", Double.NaN).takeIf { it.isFinite() }
+            AnalysisRemoteNavigation.scroll(
+                direction = args.optString("direction", "down"),
+                pixels = args.optInt("pixels", 0).coerceAtLeast(0),
+                position = position
+            )
+        }
         return ChartRemoteCommand(seq, command)
     }
 
