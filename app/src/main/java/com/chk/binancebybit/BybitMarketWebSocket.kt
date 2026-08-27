@@ -65,25 +65,28 @@ class BybitMarketWebSocket(
 
     @Synchronized
     fun stop() {
-        stopped.set(true)
+        if (stopped.getAndSet(true)) return
         reconnect?.cancel(false)
         reconnect = null
         socket?.close(1000, "CHK chart closed")
         socket = null
+        scheduler.shutdownNow()
+        client.dispatcher.executorService.shutdown()
+        client.connectionPool.evictAll()
     }
 
     @Synchronized
     fun changeSubscription(newSymbol: String, newTimeframe: String) {
+        if (stopped.get()) return
         symbol = ChartSessionState.normalizeSymbol(newSymbol)
         timeframe = ChartSessionState.normalizeTimeframe(newTimeframe)
-        if (!stopped.get()) {
-            reconnect?.cancel(false)
-            socket?.close(1000, "CHK chart subscription changed")
-            socket = null
-            failures = 0
-            endpointIndex = 0
-            scheduler.schedule({ if (!stopped.get()) connect() }, 150, TimeUnit.MILLISECONDS)
-        }
+        reconnect?.cancel(false)
+        reconnect = null
+        socket?.close(1000, "CHK chart subscription changed")
+        socket = null
+        failures = 0
+        endpointIndex = 0
+        scheduler.schedule({ if (!stopped.get()) connect() }, 150, TimeUnit.MILLISECONDS)
     }
 
     private fun connect() {
@@ -101,7 +104,10 @@ class BybitMarketWebSocket(
                     put("publicTrade.$symbol")
                     put("orderbook.1.$symbol")
                 }
-                webSocket.send(JSONObject().apply { put("op", "subscribe"); put("args", args) }.toString())
+                webSocket.send(JSONObject().apply {
+                    put("op", "subscribe")
+                    put("args", args)
+                }.toString())
             }
 
             override fun onMessage(webSocket: WebSocket, text: String) {
@@ -130,16 +136,24 @@ class BybitMarketWebSocket(
         val topic = root.optString("topic")
         when {
             topic.startsWith("tickers.") -> {
-                val d = root.optJSONArray("data")?.optJSONObject(0) ?: return
+                val raw = root.opt("data")
+                val d = when (raw) {
+                    is JSONObject -> raw
+                    is JSONArray -> raw.optJSONObject(0)
+                    else -> null
+                } ?: return
                 val last = d.optString("lastPrice").toDoubleOrNull() ?: return
-                listener.onTicker(BybitLiveTicker(
-                    symbol = d.optString("symbol", symbol),
-                    lastPrice = last,
-                    change24hPct = (d.optString("price24hPcnt").toDoubleOrNull() ?: 0.0) * 100.0,
-                    high24h = d.optString("highPrice24h").toDoubleOrNull() ?: 0.0,
-                    low24h = d.optString("lowPrice24h").toDoubleOrNull() ?: 0.0
-                ))
+                listener.onTicker(
+                    BybitLiveTicker(
+                        symbol = d.optString("symbol", symbol),
+                        lastPrice = last,
+                        change24hPct = (d.optString("price24hPcnt").toDoubleOrNull() ?: 0.0) * 100.0,
+                        high24h = d.optString("highPrice24h").toDoubleOrNull() ?: 0.0,
+                        low24h = d.optString("lowPrice24h").toDoubleOrNull() ?: 0.0
+                    )
+                )
             }
+
             topic.startsWith("kline.") -> {
                 val d = root.optJSONArray("data")?.optJSONObject(0) ?: return
                 val candle = MarketCandle(
@@ -152,8 +166,10 @@ class BybitMarketWebSocket(
                 )
                 listener.onKline(candle, d.optBoolean("confirm", false))
             }
+
             topic.startsWith("publicTrade.") -> {
                 val arr = root.optJSONArray("data") ?: return
+                if (arr.length() == 0) return
                 val d = arr.optJSONObject(arr.length() - 1) ?: return
                 listener.onTrade(
                     symbol = d.optString("s", symbol),
@@ -163,20 +179,30 @@ class BybitMarketWebSocket(
                     timestamp = d.optLong("T")
                 )
             }
+
             topic.startsWith("orderbook.") -> {
                 val d = root.optJSONObject("data") ?: return
                 val bids = d.optJSONArray("b") ?: JSONArray()
                 val asks = d.optJSONArray("a") ?: JSONArray()
                 val bid = bids.optJSONArray(0)?.optString(0)?.toDoubleOrNull() ?: 0.0
                 val ask = asks.optJSONArray(0)?.optString(0)?.toDoubleOrNull() ?: 0.0
-                if (bid > 0.0 || ask > 0.0) listener.onOrderBook(BybitLiveBook(d.optString("s", symbol), bid, ask, root.optLong("ts")))
+                if (bid > 0.0 || ask > 0.0) {
+                    listener.onOrderBook(
+                        BybitLiveBook(
+                            symbol = d.optString("s", symbol),
+                            bestBid = bid,
+                            bestAsk = ask,
+                            timestamp = root.optLong("ts")
+                        )
+                    )
+                }
             }
         }
     }
 
     @Synchronized
     private fun scheduleReconnect() {
-        if (stopped.get() || reconnect?.isDone == false) return
+        if (stopped.get() || scheduler.isShutdown || reconnect?.isDone == false) return
         failures += 1
         if (failures >= 2) endpointIndex = min(ENDPOINTS.lastIndex, 1)
         val delay = min(30L, 1L shl min(failures, 5))
@@ -184,10 +210,20 @@ class BybitMarketWebSocket(
     }
 
     private fun wsInterval(tf: String): String? = when (tf.lowercase(Locale.US)) {
-        "1m" -> "1"; "3m" -> "3"; "5m" -> "5"; "15m" -> "15"; "30m" -> "30"
-        "1h" -> "60"; "2h" -> "120"; "4h" -> "240"; "6h" -> "360"; "12h" -> "720"
-        "1d" -> "D"; "1w" -> "W"
-        "3d" -> "D"
+        "1m" -> "1"
+        "3m" -> "3"
+        "5m" -> "5"
+        "15m" -> "15"
+        "30m" -> "30"
+        "1h" -> "60"
+        "2h" -> "120"
+        "4h" -> "240"
+        "6h" -> "360"
+        "12h" -> "720"
+        "1d" -> "D"
+        "1w" -> "W"
+        // 3D candles are aggregated locally from daily REST candles. Keep ticker/trades/book live.
+        "3d" -> null
         else -> null
     }
 
