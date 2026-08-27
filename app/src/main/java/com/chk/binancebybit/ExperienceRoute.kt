@@ -12,6 +12,7 @@ import android.view.ViewGroup
 import android.widget.FrameLayout
 import android.widget.HorizontalScrollView
 import android.widget.LinearLayout
+import android.widget.ScrollView
 import android.widget.TextView
 
 object ExperienceRoute {
@@ -53,12 +54,18 @@ object ExperienceRoute {
         val content = content(activity) ?: return
         content.removeAllViews()
         val store = SecureStore(activity)
+        val analysisView = ProAnalysisPanel(
+            activity = activity,
+            exchangeProvider = { readField(activity, "exchange") ?: "BYBIT" },
+            workspaceSync = WorkspaceSync(activity, store)
+        ).build()
+        val hostedView: View = if (analysisView is ScrollView) {
+            AnalysisInteractionHost(activity, analysisView)
+        } else {
+            analysisView
+        }
         content.addView(
-            ProAnalysisPanel(
-                activity = activity,
-                exchangeProvider = { readField(activity, "exchange") ?: "BYBIT" },
-                workspaceSync = WorkspaceSync(activity, store)
-            ).build(),
+            hostedView,
             FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT)
         )
         applyShell(activity)
