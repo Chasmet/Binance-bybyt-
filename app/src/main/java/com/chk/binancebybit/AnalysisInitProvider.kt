@@ -11,6 +11,7 @@ class AnalysisInitProvider : ContentProvider() {
         val app = context?.applicationContext as? Application ?: return false
         ExperienceRoute.install(app)
         MarketWatchService.createChannels(app)
+        ChartRealtimeCoordinator.install(app)
         return true
     }
 
