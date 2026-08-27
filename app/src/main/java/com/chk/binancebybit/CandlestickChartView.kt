@@ -109,7 +109,7 @@ class CandlestickChartView(context: Context) : View(context) {
             anchorRatio = ((detector.focusX - left) / (right - left).coerceAtLeast(1f)).coerceIn(0f, 1f)
             val end = visibleEnd(all.size)
             val start = visibleStart(end)
-            anchorGlobal = start + anchorRatio * (end - start).coerceAtLeast(1)
+            anchorGlobal = start.toDouble() + anchorRatio.toDouble() * (end - start).coerceAtLeast(1).toDouble()
             return true
         }
 
@@ -120,7 +120,7 @@ class CandlestickChartView(context: Context) : View(context) {
             if (newCount == visibleCount) return true
             visibleCount = newCount
             val maxStart = (all.size - visibleCount).coerceAtLeast(0)
-            val newStart = (anchorGlobal - anchorRatio * visibleCount).roundToInt().coerceIn(0, maxStart)
+            val newStart = (anchorGlobal - anchorRatio.toDouble() * visibleCount.toDouble()).roundToInt().coerceIn(0, maxStart)
             offsetFromEnd = (all.size - (newStart + visibleCount)).coerceIn(0, maxOffset())
             clearCrosshair()
             invalidate()
