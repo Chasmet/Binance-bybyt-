@@ -8,7 +8,7 @@ on:
   workflow_dispatch:
 
 permissions:
-  contents: read
+  contents: write
   id-token: write
 
 jobs:
@@ -88,18 +88,60 @@ jobs:
           APKSIGNER="$(find "$ANDROID_HOME/build-tools" -type f -name apksigner | sort -V | tail -n 1)"
           test -n "$APKSIGNER"
           "$APKSIGNER" verify --verbose --print-certs "$APK" | tee "$RUNNER_TEMP/chk-crypto-signing-certificate.txt"
-          cp "$APK" "app/build/outputs/apk/release/CHK-Crypto-v0.9.2-stable.apk"
+
+      - name: Resolve release metadata
+        if: env.HAS_STABLE_SIGNING == 'true'
+        id: release_meta
+        shell: bash
+        run: |
+          set -euo pipefail
+          VERSION="$(python - <<'PY'
+          import re
+          text = open('app/build.gradle.kts', encoding='utf-8').read()
+          m = re.search(r'versionName\s*=\s*"([^"]+)"', text)
+          if not m:
+              raise SystemExit('versionName not found')
+          print(m.group(1))
+          PY
+          )"
+          APK_NAME="CHK-Crypto-v${VERSION}-stable.apk"
+          ARTIFACT_NAME="CHK-Crypto-v${VERSION}-stable-signed"
+          cp "app/build/outputs/apk/release/app-release.apk" "app/build/outputs/apk/release/${APK_NAME}"
+          echo "version=${VERSION}" >> "$GITHUB_OUTPUT"
+          echo "apk_name=${APK_NAME}" >> "$GITHUB_OUTPUT"
+          echo "artifact_name=${ARTIFACT_NAME}" >> "$GITHUB_OUTPUT"
 
       - name: Upload stable signed APK
         if: env.HAS_STABLE_SIGNING == 'true'
         uses: actions/upload-artifact@v4
         with:
-          name: CHK-Crypto-v0.9.2-stable-signed
+          name: ${{ steps.release_meta.outputs.artifact_name }}
           path: |
-            app/build/outputs/apk/release/CHK-Crypto-v0.9.2-stable.apk
+            app/build/outputs/apk/release/${{ steps.release_meta.outputs.apk_name }}
             ${{ runner.temp }}/chk-crypto-signing-certificate.txt
           if-no-files-found: error
           retention-days: 30
+
+      - name: Publish APK for in-app updates
+        if: env.HAS_STABLE_SIGNING == 'true'
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ steps.release_meta.outputs.version }}
+          APK_NAME: ${{ steps.release_meta.outputs.apk_name }}
+        run: |
+          set -euo pipefail
+          TAG="v${VERSION}"
+          APK="app/build/outputs/apk/release/${APK_NAME}"
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            gh release upload "$TAG" "$APK" --clobber
+            gh release edit "$TAG" --title "CHK Crypto v${VERSION}" --latest
+          else
+            gh release create "$TAG" "$APK" \
+              --title "CHK Crypto v${VERSION}" \
+              --generate-notes \
+              --latest
+          fi
 
       - name: Build debug APK for pull request validation
         if: env.HAS_STABLE_SIGNING != 'true'
@@ -109,7 +151,7 @@ jobs:
         if: env.HAS_STABLE_SIGNING != 'true'
         uses: actions/upload-artifact@v4
         with:
-          name: CHK-Crypto-v0.9.2-debug-validation
+          name: CHK-Crypto-debug-validation
           path: app/build/outputs/apk/debug/app-debug.apk
           if-no-files-found: error
           retention-days: 7

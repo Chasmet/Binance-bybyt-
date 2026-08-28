@@ -6,6 +6,7 @@
     <uses-permission android:name="android.permission.WAKE_LOCK" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_DATA_SYNC" />
+    <uses-permission android:name="android.permission.REQUEST_INSTALL_PACKAGES" />
 
     <application
         android:name=".ChkCryptoApplication"
@@ -49,6 +50,13 @@
             android:theme="@android:style/Theme.NoDisplay" />
 
         <activity
+            android:name=".UpdateInstallActivity"
+            android:exported="false"
+            android:excludeFromRecents="true"
+            android:screenOrientation="portrait"
+            android:theme="@android:style/Theme.Material.NoActionBar" />
+
+        <activity
             android:name=".BackupActivity"
             android:exported="false"
             android:screenOrientation="portrait" />
@@ -62,6 +70,13 @@
 
         <receiver android:name=".AlertCheckReceiver" android:exported="false" />
         <receiver android:name=".TradeProposalReceiver" android:exported="false" />
+        <receiver
+            android:name=".UpdateDownloadReceiver"
+            android:exported="true">
+            <intent-filter>
+                <action android:name="android.intent.action.DOWNLOAD_COMPLETE" />
+            </intent-filter>
+        </receiver>
         <receiver android:name=".BootReceiver" android:enabled="true" android:exported="true">
             <intent-filter>
                 <action android:name="android.intent.action.BOOT_COMPLETED" />

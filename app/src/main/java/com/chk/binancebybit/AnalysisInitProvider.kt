@@ -12,6 +12,7 @@ class AnalysisInitProvider : ContentProvider() {
         ExperienceRoute.install(app)
         MarketWatchService.createChannels(app)
         ChartRealtimeCoordinator.install(app)
+        InAppUpdateManager.install(app)
         return true
     }
 
