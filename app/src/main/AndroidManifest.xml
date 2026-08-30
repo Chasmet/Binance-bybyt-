@@ -41,6 +41,12 @@
             android:theme="@android:style/Theme.Material.NoActionBar" />
 
         <activity
+            android:name=".AutoTradeActivity"
+            android:exported="false"
+            android:screenOrientation="portrait"
+            android:theme="@android:style/Theme.Material.NoActionBar" />
+
+        <activity
             android:name=".UpdateCenterActivity"
             android:exported="false"
             android:screenOrientation="portrait"
