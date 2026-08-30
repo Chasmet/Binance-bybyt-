@@ -35,8 +35,8 @@ android {
         applicationId = "com.chk.binancebybit"
         minSdk = 26
         targetSdk = 35
-        versionCode = 30
-        versionName = "0.9.5"
+        versionCode = 31
+        versionName = "0.9.6"
     }
 
     signingConfigs {
