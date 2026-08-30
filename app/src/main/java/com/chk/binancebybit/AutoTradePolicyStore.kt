@@ -54,8 +54,9 @@ class AutoTradePolicyStore(context: Context) {
         if (!allowCancelReplace()) return Decision(false, "Annulation/remplacement automatique désactivé")
         val createdAt = proposal.createdAt?.let { runCatching { Instant.parse(it).toEpochMilli() }.getOrNull() }
             ?: return Decision(false, "Date de proposition d'annulation absente")
-        if (createdAt < cancelReplaceArmedAt()) {
-            return Decision(false, "Proposition d'annulation antérieure à l'autorisation")
+        val minimumCreatedAt = maxOf(armedAt(), cancelReplaceArmedAt())
+        if (createdAt < minimumCreatedAt) {
+            return Decision(false, "Proposition d'annulation antérieure à l'autorisation Auto-Trade")
         }
         if (!proposal.symbol.matches(Regex("^[A-Z0-9]{2,20}USDC$"))) {
             return Decision(false, "Annulation automatique limitée au Spot CRYPTO/USDC")
