@@ -31,7 +31,7 @@ object InAppUpdateManager {
     private const val PREFS = "chk_in_app_update"
     private const val REPO = "Chasmet/Binance-bybyt-"
     private const val LATEST_RELEASE_URL = "https://api.github.com/repos/$REPO/releases/latest"
-    private const val CHECK_INTERVAL_MS = 6L * 60L * 60L * 1000L
+    private const val CHECK_INTERVAL_MS = 30L * 60L * 1000L
     private const val DISMISS_INTERVAL_MS = 6L * 60L * 60L * 1000L
     private const val CHANNEL_ID = "chk_crypto_updates"
     const val EXTRA_AUTO_INSTALL = "chk_auto_install"
@@ -50,6 +50,25 @@ object InAppUpdateManager {
         val version: String,
         val apkUrl: String,
         val notes: String
+    )
+
+    data class CheckResult(
+        val installedVersion: String,
+        val release: ReleaseInfo?,
+        val updateAvailable: Boolean,
+        val error: String? = null
+    )
+
+    data class DownloadState(
+        val installedVersion: String,
+        val latestVersion: String?,
+        val status: String,
+        val progressPercent: Int,
+        val downloadedBytes: Long,
+        val totalBytes: Long,
+        val updateAvailable: Boolean,
+        val readyToInstall: Boolean,
+        val message: String
     )
 
     fun install(app: Application) {
@@ -76,14 +95,40 @@ object InAppUpdateManager {
     }
 
     fun checkForUpdate(activity: Activity, force: Boolean) {
+        checkForUpdate(activity, force, showDialog = true, callback = null)
+    }
+
+    fun checkForUpdate(
+        activity: Activity,
+        force: Boolean,
+        showDialog: Boolean,
+        callback: ((CheckResult) -> Unit)?
+    ) {
         if (activity.isFinishing || activity.isDestroyed) return
         val prefs = activity.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
         val now = System.currentTimeMillis()
-        if (!force && now - prefs.getLong("last_check_ms", 0L) < CHECK_INTERVAL_MS) return
-        if (!checking.compareAndSet(false, true)) return
+        if (!force && now - prefs.getLong("last_check_ms", 0L) < CHECK_INTERVAL_MS) {
+            callback?.let { cb ->
+                val cached = cachedRelease(activity)
+                activity.runOnUiThread {
+                    cb(CheckResult(installedVersionName(activity), cached, cached != null, null))
+                }
+            }
+            return
+        }
+        if (!checking.compareAndSet(false, true)) {
+            callback?.let { cb ->
+                val cached = cachedRelease(activity)
+                activity.runOnUiThread {
+                    cb(CheckResult(installedVersionName(activity), cached, cached != null, "Vérification déjà en cours"))
+                }
+            }
+            return
+        }
         prefs.edit().putLong("last_check_ms", now).apply()
 
         Thread {
+            var result: CheckResult? = null
             try {
                 val request = Request.Builder()
                     .url(LATEST_RELEASE_URL)
@@ -93,43 +138,146 @@ object InAppUpdateManager {
                     .build()
                 http.newCall(request).execute().use { response ->
                     if (!response.isSuccessful) {
-                        if (force) showToast(activity, "Vérification impossible (${response.code})")
+                        val message = "Vérification impossible (${response.code})"
+                        prefs.edit().putString("last_error", message).apply()
+                        result = CheckResult(installedVersionName(activity), cachedRelease(activity), false, message)
+                        if (force && showDialog) showToast(activity, message)
                         return@use
                     }
                     val root = JSONObject(response.body?.string().orEmpty())
-                    if (root.optBoolean("draft") || root.optBoolean("prerelease")) return@use
-                    val latest = root.optString("tag_name").removePrefix("v").trim()
-                    if (latest.isBlank() || compareVersions(latest, installedVersion(activity)) <= 0) {
-                        if (force) showToast(activity, "CHK Crypto est déjà à jour")
+                    if (root.optBoolean("draft") || root.optBoolean("prerelease")) {
+                        result = CheckResult(installedVersionName(activity), null, false, null)
                         return@use
                     }
-                    val assets = root.optJSONArray("assets") ?: return@use
+                    val latest = root.optString("tag_name").removePrefix("v").trim()
+                    val assets = root.optJSONArray("assets")
                     var stableUrl = ""
                     var anyApkUrl = ""
-                    for (i in 0 until assets.length()) {
-                        val a = assets.optJSONObject(i) ?: continue
-                        val name = a.optString("name")
-                        if (!name.endsWith(".apk", ignoreCase = true)) continue
-                        val url = a.optString("browser_download_url")
-                        if (url.isBlank()) continue
-                        if (anyApkUrl.isBlank()) anyApkUrl = url
-                        if (name.contains("stable", ignoreCase = true)) stableUrl = url
+                    if (assets != null) {
+                        for (i in 0 until assets.length()) {
+                            val a = assets.optJSONObject(i) ?: continue
+                            val name = a.optString("name")
+                            if (!name.endsWith(".apk", ignoreCase = true)) continue
+                            val url = a.optString("browser_download_url")
+                            if (url.isBlank()) continue
+                            if (anyApkUrl.isBlank()) anyApkUrl = url
+                            if (name.contains("stable", ignoreCase = true)) stableUrl = url
+                        }
                     }
                     val apkUrl = stableUrl.ifBlank { anyApkUrl }
-                    if (apkUrl.isBlank()) return@use
-                    val release = ReleaseInfo(
-                        version = latest,
-                        apkUrl = apkUrl,
-                        notes = root.optString("body").trim().take(1800)
-                    )
-                    activity.runOnUiThread { showUpdateDialog(activity, release) }
+                    val notes = root.optString("body").trim().take(1800)
+                    if (latest.isNotBlank()) {
+                        prefs.edit()
+                            .putString("latest_version", latest)
+                            .putString("latest_apk_url", apkUrl)
+                            .putString("latest_notes", notes)
+                            .putLong("latest_checked_ms", System.currentTimeMillis())
+                            .remove("last_error")
+                            .apply()
+                    }
+                    val installedVersion = installedVersionName(activity)
+                    val available = latest.isNotBlank() && apkUrl.isNotBlank() && compareVersions(latest, installedVersion) > 0
+                    val release = if (available) ReleaseInfo(latest, apkUrl, notes) else null
+                    result = CheckResult(installedVersion, release, available, null)
+                    if (!available) {
+                        if (force && showDialog) showToast(activity, "CHK Crypto est déjà à jour")
+                    } else if (showDialog) {
+                        activity.runOnUiThread { showUpdateDialog(activity, release!!) }
+                    }
                 }
             } catch (e: Exception) {
-                if (force) showToast(activity, "Vérification impossible : ${e.message ?: "réseau"}")
+                val message = "Vérification impossible : ${e.message ?: "réseau"}"
+                prefs.edit().putString("last_error", message).apply()
+                result = CheckResult(installedVersionName(activity), cachedRelease(activity), false, message)
+                if (force && showDialog) showToast(activity, message)
             } finally {
                 checking.set(false)
+                val finalResult = result ?: CheckResult(installedVersionName(activity), cachedRelease(activity), false, "Réponse de mise à jour indisponible")
+                callback?.let { cb ->
+                    activity.runOnUiThread {
+                        if (!activity.isFinishing && !activity.isDestroyed) cb(finalResult)
+                    }
+                }
             }
-        }.apply { isDaemon = true }.start()
+        }.apply {
+            name = "CHK-Update-Check"
+            isDaemon = true
+            start()
+        }
+    }
+
+    fun installedVersionName(context: Context): String = currentPackageInfo(context).versionName ?: "0"
+
+    fun cachedRelease(context: Context): ReleaseInfo? {
+        val prefs = context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
+        val version = prefs.getString("latest_version", "").orEmpty()
+        val url = prefs.getString("latest_apk_url", "").orEmpty()
+        val notes = prefs.getString("latest_notes", "").orEmpty()
+        if (version.isBlank() || url.isBlank()) return null
+        if (compareVersions(version, installedVersionName(context)) <= 0) return null
+        return ReleaseInfo(version, url, notes)
+    }
+
+    fun currentDownloadState(context: Context): DownloadState {
+        cleanupAfterSuccessfulUpdate(context)
+        val prefs = context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
+        val installedVersion = installedVersionName(context)
+        val latest = prefs.getString("latest_version", "").orEmpty().ifBlank { null }
+        val releaseAvailable = latest != null && compareVersions(latest, installedVersion) > 0
+        val id = prefs.getLong("download_id", -1L)
+        val downloadVersion = prefs.getString("download_version", "").orEmpty().ifBlank { latest }
+        if (id <= 0L) {
+            val error = prefs.getString("last_error", "").orEmpty()
+            return DownloadState(
+                installedVersion = installedVersion,
+                latestVersion = latest,
+                status = if (releaseAvailable) "AVAILABLE" else if (error.isNotBlank()) "ERROR" else "IDLE",
+                progressPercent = 0,
+                downloadedBytes = 0L,
+                totalBytes = 0L,
+                updateAvailable = releaseAvailable,
+                readyToInstall = false,
+                message = when {
+                    releaseAvailable -> "Mise à jour v$latest disponible"
+                    error.isNotBlank() -> error
+                    else -> "CHK Crypto est à jour"
+                }
+            )
+        }
+
+        val dm = context.getSystemService(Context.DOWNLOAD_SERVICE) as DownloadManager
+        return runCatching {
+            dm.query(DownloadManager.Query().setFilterById(id)).use { cursor ->
+                if (!cursor.moveToFirst()) {
+                    return@use DownloadState(installedVersion, latest, "FAILED", 0, 0, 0, releaseAvailable, false, "Téléchargement introuvable")
+                }
+                val status = cursor.getInt(cursor.getColumnIndexOrThrow(DownloadManager.COLUMN_STATUS))
+                val downloaded = cursor.getLong(cursor.getColumnIndexOrThrow(DownloadManager.COLUMN_BYTES_DOWNLOADED_SO_FAR)).coerceAtLeast(0L)
+                val total = cursor.getLong(cursor.getColumnIndexOrThrow(DownloadManager.COLUMN_TOTAL_SIZE_BYTES))
+                val pct = if (total > 0L) ((downloaded * 100L) / total).toInt().coerceIn(0, 100) else 0
+                val ready = status == DownloadManager.STATUS_SUCCESSFUL && downloadReady(context)
+                val state = when (status) {
+                    DownloadManager.STATUS_PENDING -> "PENDING"
+                    DownloadManager.STATUS_RUNNING -> "DOWNLOADING"
+                    DownloadManager.STATUS_PAUSED -> "PAUSED"
+                    DownloadManager.STATUS_SUCCESSFUL -> if (ready) "READY" else "VERIFYING"
+                    DownloadManager.STATUS_FAILED -> "FAILED"
+                    else -> "UNKNOWN"
+                }
+                val message = when (state) {
+                    "PENDING" -> "Téléchargement en attente…"
+                    "DOWNLOADING" -> "Téléchargement v${downloadVersion ?: ""} • $pct %"
+                    "PAUSED" -> "Téléchargement en pause • $pct %"
+                    "READY" -> "Mise à jour v${downloadVersion ?: ""} prête à installer"
+                    "VERIFYING" -> "Vérification de l'APK…"
+                    "FAILED" -> "Échec du téléchargement. Tu peux relancer."
+                    else -> "État du téléchargement indisponible"
+                }
+                DownloadState(installedVersion, latest, state, pct, downloaded, total, releaseAvailable, ready, message)
+            }
+        }.getOrElse {
+            DownloadState(installedVersion, latest, "ERROR", 0, 0, 0, releaseAvailable, false, it.message ?: "Erreur DownloadManager")
+        }
     }
 
     private fun showUpdateDialog(activity: Activity, release: ReleaseInfo) {
@@ -144,9 +292,9 @@ object InAppUpdateManager {
         }
         val notes = release.notes.ifBlank { "Améliorations et corrections de CHK Crypto." }
         val message = buildString {
-            append("Version ${installedVersion(activity)} → ${release.version}\n\n")
+            append("Version ${installedVersionName(activity)} → ${release.version}\n\n")
             append(notes)
-            append("\n\nTéléchargement en arrière-plan. L'installation remplace l'application sans la désinstaller : portefeuille local, alarmes, réglages et clés chiffrées restent conservés.")
+            append("\n\nTu peux aussi suivre le téléchargement dans Réglages → Mise à jour.")
         }
         AlertDialog.Builder(activity)
             .setTitle("Nouvelle mise à jour CHK Crypto")
@@ -172,7 +320,12 @@ object InAppUpdateManager {
             .show()
     }
 
-    private fun startBackgroundDownload(context: Context, release: ReleaseInfo) {
+    fun startBackgroundDownload(context: Context, release: ReleaseInfo): Long {
+        val prefs = context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
+        val oldId = prefs.getLong("download_id", -1L)
+        if (oldId > 0L) {
+            runCatching { (context.getSystemService(Context.DOWNLOAD_SERVICE) as DownloadManager).remove(oldId) }
+        }
         val dm = context.getSystemService(Context.DOWNLOAD_SERVICE) as DownloadManager
         val fileName = "CHK-Crypto-v${safeVersion(release.version)}-stable.apk"
         val target = File(context.getExternalFilesDir(Environment.DIRECTORY_DOWNLOADS), fileName)
@@ -188,15 +341,26 @@ object InAppUpdateManager {
             .setDestinationInExternalFilesDir(context, Environment.DIRECTORY_DOWNLOADS, fileName)
 
         val id = dm.enqueue(request)
-        context.getSharedPreferences(PREFS, Context.MODE_PRIVATE).edit()
+        prefs.edit()
             .putLong("download_id", id)
             .putString("download_version", release.version)
             .putString("download_path", target.absolutePath)
             .putLong("download_started_ms", System.currentTimeMillis())
+            .putString("latest_version", release.version)
+            .putString("latest_apk_url", release.apkUrl)
+            .putString("latest_notes", release.notes)
             .remove("dismissed_version")
             .remove("dismissed_at")
+            .remove("last_error")
             .apply()
-        Toast.makeText(context, "Mise à jour téléchargée en arrière-plan", Toast.LENGTH_LONG).show()
+        Toast.makeText(context, "Téléchargement v${release.version} lancé", Toast.LENGTH_SHORT).show()
+        return id
+    }
+
+    fun retryDownload(context: Context): Boolean {
+        val release = cachedRelease(context) ?: return false
+        startBackgroundDownload(context, release)
+        return true
     }
 
     fun handleDownloadCompleted(context: Context, completedId: Long) {
@@ -227,14 +391,18 @@ object InAppUpdateManager {
             .getString("download_version", "nouvelle").orEmpty()
         AlertDialog.Builder(activity)
             .setTitle("Mise à jour prête")
-            .setMessage("CHK Crypto v$version est téléchargée. Installer maintenant met à jour l'application sans effacer tes données ni tes clés API.")
+            .setMessage("CHK Crypto v$version est téléchargée. L'installation conserve tes données, règles Bot, alarmes, réglages et clés API chiffrées.")
             .setPositiveButton("Installer maintenant") { _, _ ->
                 dialogVisible.set(false)
-                activity.startActivity(Intent(activity, UpdateInstallActivity::class.java).putExtra(EXTRA_AUTO_INSTALL, true))
+                launchInstaller(activity)
             }
             .setNegativeButton("Plus tard") { _, _ -> dialogVisible.set(false) }
             .setOnCancelListener { dialogVisible.set(false) }
             .show()
+    }
+
+    fun launchInstaller(activity: Activity) {
+        activity.startActivity(Intent(activity, UpdateInstallActivity::class.java).putExtra(EXTRA_AUTO_INSTALL, true))
     }
 
     fun verifyDownloadedPackage(context: Context): Pair<Boolean, String> {
@@ -315,6 +483,7 @@ object InAppUpdateManager {
     }
 
     private fun createNotificationChannel(context: Context) {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.O) return
         val nm = context.getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
         nm.createNotificationChannel(
             NotificationChannel(CHANNEL_ID, "Mises à jour CHK Crypto", NotificationManager.IMPORTANCE_HIGH).apply {
@@ -326,7 +495,7 @@ object InAppUpdateManager {
     private fun cleanupAfterSuccessfulUpdate(context: Context) {
         val prefs = context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
         val downloaded = prefs.getString("download_version", "").orEmpty()
-        if (downloaded.isBlank() || compareVersions(installedVersion(context), downloaded) < 0) return
+        if (downloaded.isBlank() || compareVersions(installedVersionName(context), downloaded) < 0) return
         val path = prefs.getString("download_path", "").orEmpty()
         if (path.isNotBlank()) runCatching { File(path).delete() }
         prefs.edit()
@@ -338,8 +507,6 @@ object InAppUpdateManager {
             .remove("dismissed_at")
             .apply()
     }
-
-    private fun installedVersion(context: Context): String = currentPackageInfo(context).versionName ?: "0"
 
     private fun currentPackageInfo(context: Context): PackageInfo {
         val pm = context.packageManager
