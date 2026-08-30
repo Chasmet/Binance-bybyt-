@@ -23,10 +23,13 @@ class MarketWatchService : Service() {
     private var worker: Thread? = null
     private var wakeLock: PowerManager.WakeLock? = null
     private var lastRemoteSyncAt = 0L
+    private lateinit var botEngine: BotEngine
 
     override fun onCreate() {
         super.onCreate()
         createChannels(this)
+        BotEngine.createChannels(this)
+        botEngine = BotEngine(this, publicClient)
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
@@ -103,6 +106,9 @@ class MarketWatchService : Service() {
                 }
             }
         }
+
+        // Bot CHK is local and only prepares proposals. No real trade can be executed here.
+        runCatching { botEngine.evaluateOnce() }
 
         if (store.smartWatchEnabled()) {
             val threshold = store.smartMoveThresholdPct()
@@ -184,16 +190,20 @@ class MarketWatchService : Service() {
     }
 
     private fun buildForegroundNotification(active: Int): Notification {
+        val botStore = BotRuleStore(this)
+        val botActive = if (botStore.enabled()) botStore.activeCount() else 0
+        val openTarget = if (botActive > 0) BotActivity::class.java else MainActivityV4::class.java
         val open = PendingIntent.getActivity(
             this,
             9001,
-            Intent(this, MainActivityV4::class.java).apply { flags = Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP },
+            Intent(this, openTarget).apply { flags = Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP },
             PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
         )
         val b = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) Notification.Builder(this, SERVICE_CHANNEL) else @Suppress("DEPRECATION") Notification.Builder(this)
+        val botText = if (botActive > 0) " • Bot CHK $botActive règle(s)" else ""
         return b.setSmallIcon(R.drawable.app_icon)
             .setContentTitle("CHK Crypto • surveillance active")
-            .setContentText("$active alarme(s) CHK • synchronisation MCP + prix Bybit public")
+            .setContentText("$active alarme(s)$botText • Bybit public")
             .setContentIntent(open)
             .setOngoing(true)
             .setOnlyAlertOnce(true)
