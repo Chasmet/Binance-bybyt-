@@ -61,7 +61,7 @@ object SettingsUpdateInjector {
         val surface = Color.rgb(20, 23, 28)
         val surface2 = Color.rgb(28, 32, 38)
         val border = Color.rgb(48, 54, 64)
-        val text = Color.rgb(246, 247, 249)
+        val textColor = Color.rgb(246, 247, 249)
         val muted = Color.rgb(153, 162, 174)
         val yellow = Color.rgb(240, 185, 11)
 
@@ -81,11 +81,11 @@ object SettingsUpdateInjector {
         }
 
         val connection = Button(activity).apply {
-            text = "Connexion API"
+            this.text = "Connexion API"
             isAllCaps = false
             textSize = 12f
             setTypeface(Typeface.DEFAULT, Typeface.BOLD)
-            setTextColor(text)
+            setTextColor(textColor)
             background = bg(surface2, Color.TRANSPARENT, 12)
             isClickable = false
             isFocusable = false
@@ -96,7 +96,7 @@ object SettingsUpdateInjector {
 
         val available = InAppUpdateManager.cachedRelease(activity)
         val update = Button(activity).apply {
-            text = if (available != null) "Mise à jour • v${available.version}" else "Mise à jour"
+            this.text = if (available != null) "Mise à jour • v${available.version}" else "Mise à jour"
             isAllCaps = false
             textSize = 12f
             setTypeface(Typeface.DEFAULT, Typeface.BOLD)
