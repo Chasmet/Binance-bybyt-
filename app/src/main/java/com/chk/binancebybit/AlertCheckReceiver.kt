@@ -17,7 +17,7 @@ class AlertCheckReceiver : BroadcastReceiver() {
     override fun onReceive(context: Context, intent: Intent?) {
         val pending = goAsync()
         Thread {
-            try { checkAlerts(context.applicationContext) } catch (_: Exception) { } finally { pending.finish() }
+            try { checkAlertsAndBot(context.applicationContext) } catch (_: Exception) { } finally { pending.finish() }
         }.start()
     }
 
@@ -56,7 +56,7 @@ class AlertCheckReceiver : BroadcastReceiver() {
             }
         }
 
-        private fun checkAlerts(context: Context) {
+        private fun checkAlertsAndBot(context: Context) {
             runCatching { RemoteAlertClient(context).syncIntoLocal() }
             val store = LocalAlertStore(context)
             val client = BybitPublicMarketClient()
@@ -71,6 +71,14 @@ class AlertCheckReceiver : BroadcastReceiver() {
                         store.markTriggered(alert.id, disableAfterTrigger = true, lastPrice = ticker.lastPrice)
                     }
                 }
+            }
+
+            // Independent Bot watchdog: the foreground watcher is primary, this 15-min alarm is a fallback.
+            val botStore = BotRuleStore(context)
+            if (botStore.enabled()) {
+                runCatching { BotEngine(context, client).evaluateOnce() }
+                botStore.syncJournalNow()
+                runCatching { MarketWatchService.start(context) }
             }
         }
 

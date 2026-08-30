@@ -17,9 +17,11 @@ import java.util.concurrent.atomic.AtomicBoolean
 import kotlin.math.max
 
 /**
- * Local rule engine. It never calls OpenAI and never executes a real order.
- * PREPARE_BUY / PREPARE_SELL only create a normal CHK Crypto proposal that still
- * has to be explicitly confirmed by the user in the existing Orders screen.
+ * Autonomous local rule engine.
+ * - no OpenAI call
+ * - no Notes writes
+ * - independent Bot journal
+ * - BUY/SELL remain proposals requiring explicit confirmation in CHK Crypto
  */
 class BotEngine(
     context: Context,
@@ -28,6 +30,7 @@ class BotEngine(
     private val app = context.applicationContext
     private val store = BotRuleStore(app)
     private val secureStore = SecureStore(app)
+    private val observationPrefs = app.getSharedPreferences("chk_bot_observations_v1", Context.MODE_PRIVATE)
     private val evaluating = AtomicBoolean(false)
 
     fun evaluateOnce(): Summary {
@@ -35,6 +38,12 @@ class BotEngine(
         if (!evaluating.compareAndSet(false, true)) return Summary(0, 0, 0)
         return try {
             val rules = store.list().filter { it.enabled && it.targetPrice > 0.0 }
+
+            // The Bot keeps reading market/chart data even when no CHK Crypto screen is open.
+            val watched = linkedSetOf("BTCUSDC", "ETHUSDC", "RENDERUSDC")
+            rules.forEach { watched += it.symbol }
+            watched.forEach { symbol -> runCatching { recordMarketObservationIfDue(symbol) } }
+
             if (rules.isEmpty()) return Summary(0, 0, 0)
 
             val tickerCache = hashMapOf<String, BybitPublicTicker>()
@@ -82,38 +91,88 @@ class BotEngine(
                             )
                             proposals++
                             val actionText = if (side == "BUY") "ACHAT" else "VENTE"
-                            store.addLog("PROPOSAL", "${rule.name} • proposition $actionText", "$detail • ${format(quote)} USDC • confirmation utilisateur obligatoire")
+                            store.addLog(
+                                level = "PROPOSAL",
+                                title = "${rule.name} • proposition $actionText",
+                                detail = "$detail • ${format(quote)} USDC • ID ${proposal.id} • confirmation utilisateur obligatoire",
+                                category = "PROPOSAL",
+                                symbol = rule.symbol,
+                                ruleId = rule.id
+                            )
                             notifyHigh(
                                 title = "Bot CHK • ordre à confirmer",
                                 body = "$actionText ${rule.symbol} préparé • ${format(quote)} USDC • aucune exécution automatique",
                                 openOrders = true
                             )
-                            runCatching {
-                                WorkspaceSync(app, secureStore).createNote(
-                                    "BYBIT",
-                                    "BOT",
-                                    "${rule.name}\n$detail\nProposition $actionText préparée par Bot CHK (${format(quote)} USDC). Confirmation APK obligatoire. ID ${proposal.id}"
-                                )
-                            }
                             TradeProposalReceiver.checkNow(app)
                         }
                         else -> {
-                            store.addLog("ALERT", rule.name, detail)
+                            store.addLog(
+                                level = "ALERT",
+                                title = rule.name,
+                                detail = detail,
+                                category = "ALERT",
+                                symbol = rule.symbol,
+                                ruleId = rule.id
+                            )
                             notifyHigh("Bot CHK • ${rule.name}", detail, openOrders = false)
-                            runCatching { WorkspaceSync(app, secureStore).createNote("BYBIT", "BOT", "${rule.name}\n$detail") }
                         }
                     }
                     triggered++
                     store.markTriggered(rule.id, disable = rule.oneShot)
                 }.onFailure { error ->
                     val message = error.message ?: error.javaClass.simpleName
-                    store.addLog("ERROR", rule.name, message)
+                    store.addLog(
+                        level = "ERROR",
+                        title = rule.name,
+                        detail = message,
+                        category = "ERROR",
+                        symbol = rule.symbol,
+                        ruleId = rule.id
+                    )
                 }
             }
             Summary(checked, triggered, proposals)
         } finally {
             evaluating.set(false)
         }
+    }
+
+    private fun recordMarketObservationIfDue(symbol: String) {
+        val key = "last_${symbol.uppercase(Locale.US)}"
+        val now = System.currentTimeMillis()
+        if (now - observationPrefs.getLong(key, 0L) < OBSERVATION_INTERVAL_MS) return
+
+        val ticker = publicClient.ticker(symbol)
+        val candles = publicClient.recentCandles(symbol, "15", 40)
+        if (candles.size < 16) return
+        val closes = candles.map { it.close }
+        val currentRsi = rsi(closes, 14)
+        val baseIndex = (candles.lastIndex - 4).coerceAtLeast(0)
+        val base = candles[baseIndex].close
+        val move1h = if (base > 0.0) (candles.last().close / base - 1.0) * 100.0 else 0.0
+        val recent = candles.takeLast(16)
+        val high = recent.maxOf { it.high }
+        val low = recent.minOf { it.low }
+        val avgVolume = recent.dropLast(1).map { it.volume }.average().takeIf { it.isFinite() && it > 0.0 } ?: 0.0
+        val volumeRatio = if (avgVolume > 0.0) recent.last().volume / avgVolume else 0.0
+
+        val detail = buildString {
+            append("$symbol • prix ${format(ticker.lastPrice)} USDC")
+            append(" • RSI14 15m ${String.format(Locale.FRANCE, "%.1f", currentRsi)}")
+            append(" • ~1h ${if (move1h >= 0) "+" else ""}${String.format(Locale.FRANCE, "%.2f", move1h)} %")
+            append(" • zone 4h ${format(low)}–${format(high)}")
+            if (volumeRatio > 0.0) append(" • volume x${String.format(Locale.FRANCE, "%.2f", volumeRatio)}")
+            append(" • 24h ${if (ticker.price24hPct >= 0) "+" else ""}${String.format(Locale.FRANCE, "%.2f", ticker.price24hPct)} %")
+        }
+        store.addLog(
+            level = "INFO",
+            title = "Observation marché 15m",
+            detail = detail,
+            category = "MARKET",
+            symbol = symbol
+        )
+        observationPrefs.edit().putLong(key, now).apply()
     }
 
     private fun loadRsi(symbol: String, timeframe: String): Double {
@@ -190,6 +249,7 @@ class BotEngine(
         private const val ALERT_CHANNEL = "chk_bot_alerts"
         private const val INFO_CHANNEL = "chk_bot_info"
         private const val INTRO_NOTIFICATION_ID = 9480
+        private const val OBSERVATION_INTERVAL_MS = 15L * 60L * 1000L
 
         fun createChannels(context: Context) {
             if (Build.VERSION.SDK_INT < 26) return
@@ -211,6 +271,9 @@ class BotEngine(
             val app = context.applicationContext
             createChannels(app)
             installShortcut(app)
+            val store = BotRuleStore(app)
+            if (store.enabled()) runCatching { MarketWatchService.start(app) }
+            store.syncJournalNow()
             val prefs = app.getSharedPreferences("chk_bot_v1", Context.MODE_PRIVATE)
             if (!prefs.getBoolean("intro_v1_shown", false)) {
                 prefs.edit().putBoolean("intro_v1_shown", true).apply()
@@ -248,8 +311,8 @@ class BotEngine(
                 Notification.Builder(context, INFO_CHANNEL)
                     .setSmallIcon(R.drawable.app_icon)
                     .setContentTitle("Nouveau • Bot CHK")
-                    .setContentText("Crée des règles locales prix + RSI sans coût API IA.")
-                    .setStyle(Notification.BigTextStyle().bigText("Bot CHK peut surveiller le marché, t'alerter et préparer des ordres. Aucun BUY/SELL n'est exécuté sans ta confirmation dans CHK Crypto."))
+                    .setContentText("Surveillance autonome + journal indépendant.")
+                    .setStyle(Notification.BigTextStyle().bigText("Bot CHK surveille le marché même quand l'écran CHK Crypto est fermé, tient son propre journal et peut préparer des ordres. Aucun BUY/SELL n'est exécuté sans ta confirmation."))
                     .setContentIntent(pending)
                     .setAutoCancel(true)
                     .build()

@@ -14,6 +14,7 @@ class AnalysisInitProvider : ContentProvider() {
         ChartRealtimeCoordinator.install(app)
         InAppUpdateManager.install(app)
         SettingsUpdateInjector.install(app)
+        HomeBotInjector.install(app)
         BotEngine.install(app)
         return true
     }

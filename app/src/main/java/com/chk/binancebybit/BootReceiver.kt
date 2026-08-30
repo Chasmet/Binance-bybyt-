@@ -13,8 +13,9 @@ class BootReceiver : BroadcastReceiver() {
         MarketWatchService.createChannels(app)
         BotEngine.createChannels(app)
         val botStore = BotRuleStore(app)
-        if (LocalAlertStore(app).monitoringEnabled() || (botStore.enabled() && botStore.activeCount() > 0)) {
+        if (LocalAlertStore(app).monitoringEnabled() || botStore.enabled()) {
             runCatching { MarketWatchService.start(app) }
         }
+        if (botStore.enabled()) botStore.syncJournalNow()
     }
 }
