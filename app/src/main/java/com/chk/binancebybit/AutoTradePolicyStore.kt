@@ -21,6 +21,15 @@ class AutoTradePolicyStore(context: Context) {
     fun allowChatGptProposals(): Boolean = prefs.getBoolean(KEY_CHATGPT, false)
     fun setAllowChatGptProposals(value: Boolean) = prefs.edit().putBoolean(KEY_CHATGPT, value).apply()
 
+    fun allowCancelReplace(): Boolean = prefs.getBoolean(KEY_CANCEL_REPLACE, false)
+    fun setAllowCancelReplace(value: Boolean) {
+        val wasEnabled = allowCancelReplace()
+        val edit = prefs.edit().putBoolean(KEY_CANCEL_REPLACE, value)
+        if (value && !wasEnabled) edit.putLong(KEY_CANCEL_REPLACE_ARMED_AT, System.currentTimeMillis())
+        edit.apply()
+    }
+    fun cancelReplaceArmedAt(): Long = prefs.getLong(KEY_CANCEL_REPLACE_ARMED_AT, Long.MAX_VALUE)
+
     fun maxOrderUsdc(): Double = prefs.getFloat(KEY_MAX_ORDER, 10f).toDouble().coerceIn(1.01, 10.0)
     fun setMaxOrderUsdc(value: Double) = prefs.edit().putFloat(KEY_MAX_ORDER, value.coerceIn(1.01, 10.0).toFloat()).apply()
 
@@ -40,6 +49,26 @@ class AutoTradePolicyStore(context: Context) {
         return prefs.getInt(KEY_TODAY_ORDERS, 0)
     }
 
+    fun canAutoCancel(proposal: CancelProposal): Decision {
+        if (!enabled()) return Decision(false, "Auto-Trade désactivé")
+        if (!allowCancelReplace()) return Decision(false, "Annulation/remplacement automatique désactivé")
+        val createdAt = proposal.createdAt?.let { runCatching { Instant.parse(it).toEpochMilli() }.getOrNull() }
+            ?: return Decision(false, "Date de proposition d'annulation absente")
+        val minimumCreatedAt = maxOf(armedAt(), cancelReplaceArmedAt())
+        if (createdAt < minimumCreatedAt) {
+            return Decision(false, "Proposition d'annulation antérieure à l'autorisation Auto-Trade")
+        }
+        if (!proposal.symbol.matches(Regex("^[A-Z0-9]{2,20}USDC$"))) {
+            return Decision(false, "Annulation automatique limitée au Spot CRYPTO/USDC")
+        }
+        if (proposal.targetOrderId.isBlank()) return Decision(false, "Order ID cible absent")
+        val expired = proposal.expiresAt?.let {
+            runCatching { Instant.parse(it).toEpochMilli() <= System.currentTimeMillis() }.getOrDefault(false)
+        } ?: false
+        if (expired) return Decision(false, "Proposition d'annulation expirée")
+        return Decision(true, "OK")
+    }
+
     fun canExecute(proposal: TradeProposal): Decision {
         resetIfNewDay()
         if (!enabled()) return Decision(false, "Auto-Trade désactivé")
@@ -53,9 +82,11 @@ class AutoTradePolicyStore(context: Context) {
         val source = proposal.source.lowercase()
         val isBot = source.contains("bot-chk")
         val isChat = source.contains("chatgpt") || source.contains("workspace")
+        val isCancelReplacement = source.startsWith("cancel-replacement:")
         if (isBot && !allowBotRules()) return Decision(false, "Auto-exécution des règles Bot désactivée")
         if (!isBot && isChat && !allowChatGptProposals()) return Decision(false, "Auto-confirmation ChatGPT désactivée")
-        if (!isBot && !isChat) return Decision(false, "Source de proposition non autorisée")
+        if (isCancelReplacement && !allowCancelReplace()) return Decision(false, "Remplacement automatique désactivé")
+        if (!isBot && !isChat && !isCancelReplacement) return Decision(false, "Source de proposition non autorisée")
         if (todayOrders() >= maxOrdersPerDay()) return Decision(false, "Limite quotidienne d'ordres atteinte")
         if (todayNotional() + proposal.quoteAmountUsdc > dailyCapUsdc() + 1e-9) return Decision(false, "Plafond quotidien USDC atteint")
         return Decision(true, "OK")
@@ -90,6 +121,8 @@ class AutoTradePolicyStore(context: Context) {
         private const val KEY_ARMED_AT = "armed_at"
         private const val KEY_BOT_RULES = "allow_bot_rules"
         private const val KEY_CHATGPT = "allow_chatgpt_proposals"
+        private const val KEY_CANCEL_REPLACE = "allow_cancel_replace"
+        private const val KEY_CANCEL_REPLACE_ARMED_AT = "cancel_replace_armed_at"
         private const val KEY_MAX_ORDER = "max_order_usdc"
         private const val KEY_DAILY_CAP = "daily_cap_usdc"
         private const val KEY_MAX_ORDERS = "max_orders_per_day"
