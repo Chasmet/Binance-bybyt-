@@ -7,7 +7,6 @@ import android.graphics.Typeface
 import android.graphics.drawable.GradientDrawable
 import android.os.Bundle
 import android.text.InputType
-import android.view.Gravity
 import android.view.ViewGroup
 import android.widget.Button
 import android.widget.CheckBox
@@ -24,7 +23,7 @@ class AutoTradeActivity : Activity() {
     private val bg = Color.rgb(10,12,15)
     private val surface = Color.rgb(20,23,28)
     private val border = Color.rgb(48,54,64)
-    private val text = Color.rgb(246,247,249)
+    private val textColor = Color.rgb(246,247,249)
     private val muted = Color.rgb(153,162,174)
     private val green = Color.rgb(57,197,128)
     private val red = Color.rgb(238,91,91)
@@ -51,7 +50,7 @@ class AutoTradeActivity : Activity() {
             text = "‹  AUTO-TRADE CHK"
             textSize = 24f
             setTypeface(Typeface.DEFAULT, Typeface.BOLD)
-            setTextColor(text)
+            setTextColor(textColor)
             setPadding(0,0,0,dp(14))
             setOnClickListener { finish() }
         })
@@ -73,7 +72,7 @@ class AutoTradeActivity : Activity() {
                 isAllCaps = false
                 text = if (policy.enabled()) "COUPER AUTO-TRADE" else "ACTIVER AUTO-TRADE"
                 setTypeface(Typeface.DEFAULT, Typeface.BOLD)
-                setTextColor(if (policy.enabled()) text else Color.BLACK)
+                setTextColor(if (policy.enabled()) textColor else Color.BLACK)
                 background = rounded(if (policy.enabled()) red else green)
                 setOnClickListener {
                     if (policy.enabled()) {
@@ -99,13 +98,13 @@ class AutoTradeActivity : Activity() {
         val botRules = CheckBox(this).apply {
             text = "Exécuter automatiquement les règles Bot CHK"
             isChecked = policy.allowBotRules()
-            setTextColor(text)
+            setTextColor(textColor)
             buttonTintList = android.content.res.ColorStateList.valueOf(yellow)
         }
         val chatGpt = CheckBox(this).apply {
             text = "Auto-confirmer les propositions ChatGPT"
             isChecked = policy.allowChatGptProposals()
-            setTextColor(text)
+            setTextColor(textColor)
             buttonTintList = android.content.res.ColorStateList.valueOf(yellow)
         }
         val maxOrder = number("Plafond par ordre USDC (max 10)", policy.maxOrderUsdc())
@@ -118,7 +117,9 @@ class AutoTradeActivity : Activity() {
             addView(chatGpt)
             addView(TextView(this@AutoTradeActivity).apply {
                 text = "Seuls les ordres LIMIT sont exécutés automatiquement. MARKET reste bloqué."
-                textSize = 12f; setTextColor(muted); setPadding(0,dp(5),0,dp(8))
+                textSize = 12f
+                setTextColor(muted)
+                setPadding(0,dp(5),0,dp(8))
             })
             addView(maxOrder)
             addView(daily)
@@ -151,14 +152,21 @@ class AutoTradeActivity : Activity() {
     private fun number(hint: String, value: Double) = EditText(this).apply {
         this.hint = hint
         setHintTextColor(muted)
-        setTextColor(text)
+        setTextColor(textColor)
         setText(if (value % 1.0 == 0.0) value.toInt().toString() else String.format(Locale.US,"%.2f",value))
         inputType = InputType.TYPE_CLASS_NUMBER or InputType.TYPE_NUMBER_FLAG_DECIMAL
         background = rounded(Color.rgb(28,32,38))
         setPadding(dp(14),dp(10),dp(14),dp(10))
         layoutParams = LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(52)).apply { setMargins(0,dp(6),0,dp(6)) }
     }
-    private fun title(v:String)=TextView(this).apply { text=v; textSize=16f; setTypeface(Typeface.DEFAULT,Typeface.BOLD); setTextColor(text); setPadding(0,0,0,dp(8)) }
+
+    private fun title(v:String)=TextView(this).apply {
+        text=v
+        textSize=16f
+        setTypeface(Typeface.DEFAULT,Typeface.BOLD)
+        setTextColor(textColor)
+        setPadding(0,0,0,dp(8))
+    }
     private fun body(v:String)=TextView(this).apply { text=v; textSize=12f; setTextColor(muted); setLineSpacing(0f,1.18f) }
     private fun card()=LinearLayout(this).apply { orientation=LinearLayout.VERTICAL; setPadding(dp(14),dp(14),dp(14),dp(14)); background=rounded(surface); layoutParams=LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT,ViewGroup.LayoutParams.WRAP_CONTENT).apply{setMargins(0,0,0,dp(12))} }
     private fun rounded(color:Int)=GradientDrawable().apply{shape=GradientDrawable.RECTANGLE;setColor(color);setStroke(dp(1),border);cornerRadius=dp(16).toFloat()}
