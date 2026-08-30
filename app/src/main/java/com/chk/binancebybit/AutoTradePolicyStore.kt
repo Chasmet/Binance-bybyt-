@@ -1,13 +1,19 @@
 package com.chk.binancebybit
 
 import android.content.Context
+import java.time.Instant
 import java.time.LocalDate
 
 class AutoTradePolicyStore(context: Context) {
     private val prefs = context.applicationContext.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
 
     fun enabled(): Boolean = prefs.getBoolean(KEY_ENABLED, false)
-    fun setEnabled(value: Boolean) = prefs.edit().putBoolean(KEY_ENABLED, value).apply()
+    fun setEnabled(value: Boolean) {
+        val edit = prefs.edit().putBoolean(KEY_ENABLED, value)
+        if (value) edit.putLong(KEY_ARMED_AT, System.currentTimeMillis())
+        edit.apply()
+    }
+    fun armedAt(): Long = prefs.getLong(KEY_ARMED_AT, Long.MAX_VALUE)
 
     fun allowBotRules(): Boolean = prefs.getBoolean(KEY_BOT_RULES, true)
     fun setAllowBotRules(value: Boolean) = prefs.edit().putBoolean(KEY_BOT_RULES, value).apply()
@@ -37,12 +43,16 @@ class AutoTradePolicyStore(context: Context) {
     fun canExecute(proposal: TradeProposal): Decision {
         resetIfNewDay()
         if (!enabled()) return Decision(false, "Auto-Trade désactivé")
+        val createdAt = proposal.createdAt?.let { runCatching { Instant.parse(it).toEpochMilli() }.getOrNull() }
+            ?: return Decision(false, "Date de proposition absente")
+        if (createdAt < armedAt()) return Decision(false, "Proposition antérieure à l'activation Auto-Trade")
         if (proposal.orderType != "LIMIT") return Decision(false, "Auto-Trade limité aux ordres LIMIT")
         if (proposal.quoteAmountUsdc <= 1.0 || proposal.quoteAmountUsdc > maxOrderUsdc() + 1e-9) {
             return Decision(false, "Montant hors plafond Auto-Trade")
         }
-        val isBot = proposal.source.lowercase().contains("bot-chk")
-        val isChat = proposal.source.lowercase().contains("chatgpt") || proposal.source.lowercase().contains("workspace")
+        val source = proposal.source.lowercase()
+        val isBot = source.contains("bot-chk")
+        val isChat = source.contains("chatgpt") || source.contains("workspace")
         if (isBot && !allowBotRules()) return Decision(false, "Auto-exécution des règles Bot désactivée")
         if (!isBot && isChat && !allowChatGptProposals()) return Decision(false, "Auto-confirmation ChatGPT désactivée")
         if (!isBot && !isChat) return Decision(false, "Source de proposition non autorisée")
@@ -77,6 +87,7 @@ class AutoTradePolicyStore(context: Context) {
     companion object {
         private const val PREFS = "chk_auto_trade_v1"
         private const val KEY_ENABLED = "enabled"
+        private const val KEY_ARMED_AT = "armed_at"
         private const val KEY_BOT_RULES = "allow_bot_rules"
         private const val KEY_CHATGPT = "allow_chatgpt_proposals"
         private const val KEY_MAX_ORDER = "max_order_usdc"
