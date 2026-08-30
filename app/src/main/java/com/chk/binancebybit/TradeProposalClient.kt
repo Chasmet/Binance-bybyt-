@@ -36,6 +36,38 @@ class TradeProposalClient(
     }
 
     /**
+     * Creates a proposal from Bot CHK after authenticating the installed app/device.
+     * This endpoint cannot execute an order. The returned proposal follows the exact
+     * same CONFIRMER / ANNULER flow as proposals prepared by ChatGPT.
+     */
+    fun createBotProposal(
+        symbol: String,
+        side: String,
+        quoteAmountUsdc: Double,
+        baseQuantity: Double?,
+        limitPrice: Double,
+        rationale: String,
+        expiresInMinutes: Int = 120
+    ): TradeProposal {
+        val identity = workspaceSync.ensureIdentity()
+        val root = JSONObject(postJson(JSONObject().apply {
+            put("action", "create")
+            put("deviceId", identity.deviceId)
+            put("deviceSecret", identity.deviceSecret)
+            put("symbol", symbol)
+            put("side", side)
+            put("quoteAmountUsdc", quoteAmountUsdc)
+            if (baseQuantity != null) put("baseQuantity", baseQuantity)
+            put("limitPrice", limitPrice)
+            put("rationale", rationale)
+            put("expiresInMinutes", expiresInMinutes)
+        }, BOT_ENDPOINT))
+        val proposal = root.optJSONObject("proposal")
+            ?: throw IllegalStateException("Bot CHK n'a pas reçu la proposition préparée")
+        return TradeProposal.fromJson(proposal)
+    }
+
+    /**
      * Réserve atomiquement une proposition avant tout appel réel à Bybit.
      * Le serveur n'accepte le claim que si elle est encore pending et non expirée.
      */
@@ -80,8 +112,8 @@ class TradeProposalClient(
         })
     }
 
-    private fun postJson(body: JSONObject): String {
-        val connection = (URL(ENDPOINT).openConnection() as HttpURLConnection).apply {
+    private fun postJson(body: JSONObject, endpoint: String = ENDPOINT): String {
+        val connection = (URL(endpoint).openConnection() as HttpURLConnection).apply {
             requestMethod = "POST"
             doOutput = true
             connectTimeout = 10_000
@@ -111,5 +143,6 @@ class TradeProposalClient(
 
     companion object {
         const val ENDPOINT = "https://gflnvlolwqnvzxyqsrir.supabase.co/functions/v1/chk-trade-proposals"
+        const val BOT_ENDPOINT = "https://gflnvlolwqnvzxyqsrir.supabase.co/functions/v1/chk-bot-proposals"
     }
 }
