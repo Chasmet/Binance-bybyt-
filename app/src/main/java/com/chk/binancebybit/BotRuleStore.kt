@@ -7,11 +7,13 @@ import java.util.Locale
 import java.util.UUID
 
 /**
- * Local persistent configuration for Bot CHK.
- * Nothing in this store can execute a trade: rules only notify or prepare proposals.
+ * Local persistent configuration + independent journal for Bot CHK.
+ * The journal is not stored in CHK Crypto Notes. It is mirrored to the dedicated
+ * Bot journal endpoint so ChatGPT/MCP can inspect it during later analyses.
  */
 class BotRuleStore(context: Context) {
-    private val prefs = context.applicationContext.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
+    private val app = context.applicationContext
+    private val prefs = app.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
     private val lock = Any()
 
     data class Rule(
@@ -32,10 +34,14 @@ class BotRuleStore(context: Context) {
     )
 
     data class LogEntry(
+        val id: String,
         val at: Long,
         val level: String,
+        val category: String,
         val title: String,
-        val detail: String
+        val detail: String,
+        val symbol: String = "",
+        val ruleId: String = ""
     )
 
     fun enabled(): Boolean = prefs.getBoolean(KEY_ENABLED, false)
@@ -115,19 +121,31 @@ class BotRuleStore(context: Context) {
         return now - rule.lastTriggeredAt >= COOLDOWN_MS
     }
 
-    fun addLog(level: String, title: String, detail: String) = synchronized(lock) {
+    fun addLog(
+        level: String,
+        title: String,
+        detail: String,
+        category: String = "BOT",
+        symbol: String = "",
+        ruleId: String = ""
+    ): LogEntry = synchronized(lock) {
+        val entry = LogEntry(
+            id = UUID.randomUUID().toString(),
+            at = System.currentTimeMillis(),
+            level = level.take(16).uppercase(Locale.US),
+            category = category.take(32).uppercase(Locale.US),
+            title = title.take(100),
+            detail = detail.take(700),
+            symbol = symbol.take(24).uppercase(Locale.US),
+            ruleId = ruleId.take(100)
+        )
         val current = logs().toMutableList()
-        current.add(0, LogEntry(System.currentTimeMillis(), level.take(16), title.take(100), detail.take(500)))
-        val arr = JSONArray()
-        current.take(MAX_LOGS).forEach { row ->
-            arr.put(JSONObject().apply {
-                put("at", row.at)
-                put("level", row.level)
-                put("title", row.title)
-                put("detail", row.detail)
-            })
-        }
-        prefs.edit().putString(KEY_LOGS, arr.toString()).apply()
+        current.add(0, entry)
+        saveLogs(current)
+        Thread {
+            runCatching { BotJournalClient(app).append(entry) }
+        }.apply { isDaemon = true; name = "CHK-BotJournal"; start() }
+        entry
     }
 
     fun logs(): List<LogEntry> = synchronized(lock) {
@@ -135,13 +153,48 @@ class BotRuleStore(context: Context) {
         buildList {
             for (i in 0 until arr.length()) {
                 val o = arr.optJSONObject(i) ?: continue
-                add(LogEntry(o.optLong("at"), o.optString("level"), o.optString("title"), o.optString("detail")))
+                add(
+                    LogEntry(
+                        id = o.optString("id").ifBlank { "legacy-${o.optLong("at")}-${i}" },
+                        at = o.optLong("at"),
+                        level = o.optString("level", "INFO"),
+                        category = o.optString("category", "BOT"),
+                        title = o.optString("title"),
+                        detail = o.optString("detail"),
+                        symbol = o.optString("symbol"),
+                        ruleId = o.optString("ruleId")
+                    )
+                )
             }
         }
     }
 
+    fun syncJournalNow() {
+        val snapshot = logs()
+        Thread {
+            runCatching { BotJournalClient(app).syncRecent(snapshot) }
+        }.apply { isDaemon = true; name = "CHK-BotJournalSync"; start() }
+    }
+
     fun clearLogs() {
         prefs.edit().remove(KEY_LOGS).apply()
+    }
+
+    private fun saveLogs(rows: List<LogEntry>) {
+        val arr = JSONArray()
+        rows.take(MAX_LOGS).forEach { row ->
+            arr.put(JSONObject().apply {
+                put("id", row.id)
+                put("at", row.at)
+                put("level", row.level)
+                put("category", row.category)
+                put("title", row.title)
+                put("detail", row.detail)
+                put("symbol", row.symbol)
+                put("ruleId", row.ruleId)
+            })
+        }
+        prefs.edit().putString(KEY_LOGS, arr.toString()).apply()
     }
 
     private fun save(rows: List<Rule>) {
@@ -225,7 +278,7 @@ class BotRuleStore(context: Context) {
         private const val KEY_RULES = "rules_json"
         private const val KEY_LOGS = "logs_json"
         private const val MAX_RULES = 50
-        private const val MAX_LOGS = 120
+        private const val MAX_LOGS = 240
         private const val COOLDOWN_MS = 60L * 60_000L
 
         fun normalizeSymbol(value: String): String {
