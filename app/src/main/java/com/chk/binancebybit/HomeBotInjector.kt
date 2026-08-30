@@ -19,7 +19,7 @@ import java.util.WeakHashMap
 import java.util.concurrent.atomic.AtomicBoolean
 
 object HomeBotInjector {
-    private const val TAG = "chk_home_bot_button_v096"
+    private const val TAG = "chk_home_bot_group_v097"
     private val installed = AtomicBoolean(false)
     private val listeners = WeakHashMap<Activity, ViewTreeObserver.OnGlobalLayoutListener>()
 
@@ -55,25 +55,44 @@ object HomeBotInjector {
         val density = activity.resources.displayMetrics.density
         fun dp(v: Int) = (v * density).toInt()
         val yellow = Color.rgb(240,185,11)
-        val button = Button(activity).apply {
-            tag = TAG
-            text = "🤖  BOT CHK • surveillance autonome"
+        val green = Color.rgb(57,197,128)
+        val autoPolicy = AutoTradePolicyStore(activity)
+
+        fun button(label: String, color: Int, onClick: () -> Unit) = Button(activity).apply {
+            text = label
             isAllCaps = false
             textSize = 14f
             setTypeface(Typeface.DEFAULT, Typeface.BOLD)
             setTextColor(Color.BLACK)
             background = GradientDrawable().apply {
                 shape = GradientDrawable.RECTANGLE
-                setColor(yellow)
+                setColor(color)
                 cornerRadius = dp(16).toFloat()
             }
-            setOnClickListener { activity.startActivity(Intent(activity, BotActivity::class.java)) }
+            setOnClickListener { onClick() }
         }
+
+        val group = LinearLayout(activity).apply {
+            tag = TAG
+            orientation = LinearLayout.VERTICAL
+            addView(button("🤖  BOT CHK • surveillance autonome", yellow) {
+                activity.startActivity(Intent(activity, BotActivity::class.java))
+            }, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(54)).apply {
+                setMargins(0, dp(8), 0, dp(5))
+            })
+            addView(button(
+                if (autoPolicy.enabled()) "⚡  AUTO-TRADE • ACTIF" else "⚡  AUTO-TRADE • configurer",
+                if (autoPolicy.enabled()) green else Color.rgb(225, 230, 238)
+            ) {
+                activity.startActivity(Intent(activity, AutoTradeActivity::class.java))
+            }, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(54)).apply {
+                setMargins(0, dp(5), 0, dp(10))
+            })
+        }
+
         val titleIndex = page.indexOfChild(title)
         val insertAt = (titleIndex + 2).coerceIn(0, page.childCount)
-        page.addView(button, insertAt, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(54)).apply {
-            setMargins(0, dp(8), 0, dp(10))
-        })
+        page.addView(group, insertAt, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT))
     }
 
     private fun findText(view: View, prefix: String): TextView? {
