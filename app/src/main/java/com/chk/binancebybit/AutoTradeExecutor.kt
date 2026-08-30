@@ -1,8 +1,17 @@
 package com.chk.binancebybit
 
+import android.Manifest
+import android.app.Notification
+import android.app.NotificationChannel
+import android.app.NotificationManager
+import android.app.PendingIntent
 import android.content.Context
+import android.content.Intent
+import android.content.pm.PackageManager
+import android.os.Build
 import org.json.JSONObject
 import java.util.concurrent.atomic.AtomicBoolean
+import kotlin.math.abs
 
 class AutoTradeExecutor(context: Context) {
     private val app = context.applicationContext
@@ -69,6 +78,11 @@ class AutoTradeExecutor(context: Context) {
                 },
                 symbol = claimed.symbol
             )
+            notify(
+                urgent = false,
+                title = "Auto-Trade • ${claimed.side} ${claimed.symbol}",
+                body = "${claimed.quoteAmountUsdc} USDC • LIMIT ${claimed.limitPrice ?: "-"} • Bybit ${result.orderStatus}"
+            )
             result
         } catch (uncertain: BybitExecutionUncertainException) {
             journal.addLog(
@@ -77,6 +91,11 @@ class AutoTradeExecutor(context: Context) {
                 title = "Auto-Trade à vérifier",
                 detail = "${claimed.side} ${claimed.symbol} • ${uncertain.message}",
                 symbol = claimed.symbol
+            )
+            notify(
+                urgent = true,
+                title = "Auto-Trade • ordre à vérifier",
+                body = "${claimed.side} ${claimed.symbol} • état Bybit incertain. Aucun renvoi automatique."
             )
             throw uncertain
         } catch (error: Exception) {
@@ -88,9 +107,57 @@ class AutoTradeExecutor(context: Context) {
                     JSONObject().put("error", error.message ?: error.toString()).put("autoTrade", true)
                 )
             }
+            notify(
+                urgent = true,
+                title = "Auto-Trade • ordre refusé",
+                body = "${claimed.side} ${claimed.symbol} • ${error.message ?: "erreur inconnue"}"
+            )
             throw error
         }
     }
 
+    private fun notify(urgent: Boolean, title: String, body: String) {
+        if (Build.VERSION.SDK_INT >= 33 && app.checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED) return
+        val manager = app.getSystemService(Context.NOTIFICATION_SERVICE) as? NotificationManager ?: return
+        if (Build.VERSION.SDK_INT >= 26) {
+            manager.createNotificationChannel(
+                NotificationChannel(
+                    CHANNEL_ID,
+                    "Auto-Trade CHK",
+                    NotificationManager.IMPORTANCE_HIGH
+                ).apply {
+                    description = "Exécutions automatiques et incidents Auto-Trade CHK"
+                    enableVibration(true)
+                }
+            )
+        }
+        val intent = Intent(app, AutoTradeActivity::class.java).apply {
+            flags = Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP
+        }
+        val pending = PendingIntent.getActivity(
+            app,
+            abs((title + body).hashCode()),
+            intent,
+            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
+        )
+        val builder = if (Build.VERSION.SDK_INT >= 26) Notification.Builder(app, CHANNEL_ID) else @Suppress("DEPRECATION") Notification.Builder(app)
+        manager.notify(
+            abs((title + body + System.currentTimeMillis()).hashCode()),
+            builder
+                .setSmallIcon(R.drawable.app_icon)
+                .setContentTitle(title)
+                .setContentText(body)
+                .setStyle(Notification.BigTextStyle().bigText(body))
+                .setContentIntent(pending)
+                .setAutoCancel(true)
+                .setPriority(if (urgent) Notification.PRIORITY_MAX else Notification.PRIORITY_HIGH)
+                .build()
+        )
+    }
+
     data class Summary(val checked: Int, val executed: Int, val failed: Int)
+
+    companion object {
+        private const val CHANNEL_ID = "chk_auto_trade"
+    }
 }
