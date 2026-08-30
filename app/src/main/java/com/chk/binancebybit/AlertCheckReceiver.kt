@@ -73,11 +73,17 @@ class AlertCheckReceiver : BroadcastReceiver() {
                 }
             }
 
-            // Independent Bot watchdog: the foreground watcher is primary, this 15-min alarm is a fallback.
+            // Independent watchdog: foreground service is primary; this alarm revives Bot/Auto-Trade if Android reclaimed it.
             val botStore = BotRuleStore(context)
+            val autoTrade = AutoTradePolicyStore(context)
             if (botStore.enabled()) {
                 runCatching { BotEngine(context, client).evaluateOnce() }
                 botStore.syncJournalNow()
+            }
+            if (autoTrade.enabled()) {
+                runCatching { AutoTradeExecutor(context).processEligiblePending() }
+            }
+            if (botStore.enabled() || autoTrade.enabled()) {
                 runCatching { MarketWatchService.start(context) }
             }
         }
