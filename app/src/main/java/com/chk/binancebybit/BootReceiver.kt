@@ -11,7 +11,9 @@ class BootReceiver : BroadcastReceiver() {
         TradeProposalReceiver.createChannel(app)
         TradeProposalReceiver.schedule(app)
         MarketWatchService.createChannels(app)
-        if (LocalAlertStore(app).monitoringEnabled()) {
+        BotEngine.createChannels(app)
+        val botStore = BotRuleStore(app)
+        if (LocalAlertStore(app).monitoringEnabled() || (botStore.enabled() && botStore.activeCount() > 0)) {
             runCatching { MarketWatchService.start(app) }
         }
     }
