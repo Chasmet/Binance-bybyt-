@@ -13,6 +13,7 @@ class AnalysisInitProvider : ContentProvider() {
         MarketWatchService.createChannels(app)
         ChartRealtimeCoordinator.install(app)
         InAppUpdateManager.install(app)
+        BotEngine.install(app)
         return true
     }
 
