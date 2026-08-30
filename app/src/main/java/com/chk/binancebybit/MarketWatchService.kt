@@ -23,6 +23,7 @@ class MarketWatchService : Service() {
     private var worker: Thread? = null
     private var wakeLock: PowerManager.WakeLock? = null
     private var lastRemoteSyncAt = 0L
+    private var lastBotCheckAt = 0L
     private lateinit var botEngine: BotEngine
 
     override fun onCreate() {
@@ -107,8 +108,11 @@ class MarketWatchService : Service() {
             }
         }
 
-        // Bot CHK is local and only prepares proposals. No real trade can be executed here.
-        runCatching { botEngine.evaluateOnce() }
+        // Bot CHK uses public Bybit data and only prepares proposals. One pass/minute avoids REST spam.
+        if (now - lastBotCheckAt >= 60_000L) {
+            runCatching { botEngine.evaluateOnce() }
+            lastBotCheckAt = now
+        }
 
         if (store.smartWatchEnabled()) {
             val threshold = store.smartMoveThresholdPct()
