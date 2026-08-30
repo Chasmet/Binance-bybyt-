@@ -24,8 +24,10 @@ class MarketWatchService : Service() {
     private var wakeLock: PowerManager.WakeLock? = null
     private var lastRemoteSyncAt = 0L
     private var lastBotCheckAt = 0L
+    private var lastAutoCancelCheckAt = 0L
     private var lastAutoTradeCheckAt = 0L
     private lateinit var botEngine: BotEngine
+    private lateinit var autoCancelExecutor: AutoCancelExecutor
     private lateinit var autoTradeExecutor: AutoTradeExecutor
 
     override fun onCreate() {
@@ -33,6 +35,7 @@ class MarketWatchService : Service() {
         createChannels(this)
         BotEngine.createChannels(this)
         botEngine = BotEngine(this, publicClient)
+        autoCancelExecutor = AutoCancelExecutor(this)
         autoTradeExecutor = AutoTradeExecutor(this)
     }
 
@@ -117,8 +120,17 @@ class MarketWatchService : Service() {
             lastBotCheckAt = now
         }
 
+        val autoPolicy = AutoTradePolicyStore(this)
+
+        // Cancellation/replacement is a separate opt-in. We cancel first so a replacement proposal
+        // created by the server can be picked up by AutoTradeExecutor in the same minute.
+        if (now - lastAutoCancelCheckAt >= 60_000L && autoPolicy.enabled() && autoPolicy.allowCancelReplace()) {
+            runCatching { autoCancelExecutor.processEligiblePending() }
+            lastAutoCancelCheckAt = now
+        }
+
         // Auto-Trade is opt-in and reuses the same server claim + Bybit safety path as manual confirmation.
-        if (now - lastAutoTradeCheckAt >= 60_000L && AutoTradePolicyStore(this).enabled()) {
+        if (now - lastAutoTradeCheckAt >= 60_000L && autoPolicy.enabled()) {
             runCatching { autoTradeExecutor.processEligiblePending() }
             lastAutoTradeCheckAt = now
         }
@@ -219,7 +231,9 @@ class MarketWatchService : Service() {
         )
         val b = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) Notification.Builder(this, SERVICE_CHANNEL) else @Suppress("DEPRECATION") Notification.Builder(this)
         val botText = if (botActive > 0) " • Bot CHK $botActive règle(s)" else ""
-        val autoText = if (auto.enabled()) " • Auto-Trade ACTIF" else ""
+        val autoText = if (auto.enabled()) {
+            if (auto.allowCancelReplace()) " • Auto-Trade + annulations ACTIF" else " • Auto-Trade ACTIF"
+        } else ""
         return b.setSmallIcon(R.drawable.app_icon)
             .setContentTitle("CHK Crypto • surveillance active")
             .setContentText("$active alarme(s)$botText$autoText • Bybit")
