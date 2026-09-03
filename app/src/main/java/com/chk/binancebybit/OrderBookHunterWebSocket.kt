@@ -53,15 +53,19 @@ class OrderBookHunterWebSocket(
     private var failures = 0
     private var endpointIndex = 0
 
-    @Synchronized fun start() {
+    @Synchronized
+    fun start() {
         if (watched.isEmpty() || !stopped.compareAndSet(true, false)) return
         connect()
     }
 
-    @Synchronized fun stop() {
+    @Synchronized
+    fun stop() {
         if (stopped.getAndSet(true)) return
-        reconnect?.cancel(false); reconnect = null
-        heartbeat?.cancel(false); heartbeat = null
+        reconnect?.cancel(false)
+        reconnect = null
+        heartbeat?.cancel(false)
+        heartbeat = null
         socket?.close(1000, "CHK OrderBook Hunter stopped")
         socket = null
         books.clear()
@@ -70,17 +74,22 @@ class OrderBookHunterWebSocket(
         client.connectionPool.evictAll()
     }
 
-    @Synchronized fun replaceSymbols(symbols: Collection<String>) {
+    @Synchronized
+    fun replaceSymbols(symbols: Collection<String>) {
         watched = normalizeSymbols(symbols)
         books.keys.retainAll(watched.toSet())
         if (stopped.get()) return
-        reconnect?.cancel(false); reconnect = null
-        heartbeat?.cancel(false); heartbeat = null
+        reconnect?.cancel(false)
+        reconnect = null
+        heartbeat?.cancel(false)
+        heartbeat = null
         socket?.close(1000, "CHK OrderBook Hunter subscriptions changed")
         socket = null
         failures = 0
         endpointIndex = 0
-        scheduler.schedule({ if (!stopped.get() && watched.isNotEmpty()) connect() }, 250, TimeUnit.MILLISECONDS)
+        scheduler.schedule({
+            if (!stopped.get() && watched.isNotEmpty()) connect()
+        }, 250, TimeUnit.MILLISECONDS)
     }
 
     fun snapshot(symbolValue: String): HunterBookSnapshot? {
@@ -108,13 +117,17 @@ class OrderBookHunterWebSocket(
                 failures = 0
                 books.clear()
                 listener.onConnected(endpoint)
-                val args = JSONArray()
-                watched.forEach { symbol ->
-                    args.put("tickers.$symbol")
-                    args.put("publicTrade.$symbol")
-                    args.put("orderbook.$DEPTH.$symbol")
+
+                subscriptionBatches(watched).forEachIndexed { index, topics ->
+                    val args = JSONArray()
+                    topics.forEach(args::put)
+                    val request = JSONObject()
+                        .put("req_id", "hunter-${index + 1}")
+                        .put("op", "subscribe")
+                        .put("args", args)
+                    webSocket.send(request.toString())
                 }
-                webSocket.send(JSONObject().put("op", "subscribe").put("args", args).toString())
+
                 heartbeat?.cancel(false)
                 heartbeat = scheduler.scheduleAtFixedRate({
                     if (!stopped.get()) socket?.send(JSONObject().put("op", "ping").toString())
@@ -122,11 +135,16 @@ class OrderBookHunterWebSocket(
             }
 
             override fun onMessage(webSocket: WebSocket, text: String) = handleMessage(text)
-            override fun onClosing(webSocket: WebSocket, code: Int, reason: String) { webSocket.close(code, reason) }
+
+            override fun onClosing(webSocket: WebSocket, code: Int, reason: String) {
+                webSocket.close(code, reason)
+            }
+
             override fun onClosed(webSocket: WebSocket, code: Int, reason: String) {
                 listener.onDisconnected("$code • $reason")
                 scheduleReconnect()
             }
+
             override fun onFailure(webSocket: WebSocket, t: Throwable, response: Response?) {
                 listener.onDisconnected(t.message ?: "WebSocket indisponible")
                 if (endpointIndex == 0) endpointIndex = 1
@@ -137,6 +155,10 @@ class OrderBookHunterWebSocket(
 
     private fun handleMessage(text: String) {
         val root = runCatching { JSONObject(text) }.getOrNull() ?: return
+        if (root.optString("op") == "subscribe" && root.has("success") && !root.optBoolean("success")) {
+            listener.onDisconnected("Abonnement Bybit refusé : ${root.optString("ret_msg")}")
+            return
+        }
         val topic = root.optString("topic")
         when {
             topic.startsWith("tickers.") -> handleTicker(root)
@@ -146,48 +168,59 @@ class OrderBookHunterWebSocket(
     }
 
     private fun handleTicker(root: JSONObject) {
-        val d = when (val raw = root.opt("data")) {
+        val data = when (val raw = root.opt("data")) {
             is JSONObject -> raw
             is JSONArray -> raw.optJSONObject(0)
             else -> null
         } ?: return
-        val symbol = d.optString("symbol").ifBlank { root.optString("topic").substringAfterLast('.') }
-        val last = d.optString("lastPrice").toDoubleOrNull() ?: return
-        listener.onTicker(HunterTicker(
-            symbol = symbol,
-            lastPrice = last,
-            change24hPct = (d.optString("price24hPcnt").toDoubleOrNull() ?: 0.0) * 100.0,
-            turnover24h = d.optString("turnover24h").toDoubleOrNull() ?: 0.0,
-            volume24h = d.optString("volume24h").toDoubleOrNull() ?: 0.0,
-            timestamp = root.optLong("ts", System.currentTimeMillis())
-        ))
+        val symbol = data.optString("symbol").ifBlank { root.optString("topic").substringAfterLast('.') }
+        val last = data.optString("lastPrice").toDoubleOrNull() ?: return
+        listener.onTicker(
+            HunterTicker(
+                symbol = symbol,
+                lastPrice = last,
+                change24hPct = (data.optString("price24hPcnt").toDoubleOrNull() ?: 0.0) * 100.0,
+                turnover24h = data.optString("turnover24h").toDoubleOrNull() ?: 0.0,
+                volume24h = data.optString("volume24h").toDoubleOrNull() ?: 0.0,
+                timestamp = root.optLong("ts", System.currentTimeMillis())
+            )
+        )
     }
 
     private fun handleTrades(root: JSONObject) {
         val arr = root.optJSONArray("data") ?: return
         for (i in 0 until arr.length()) {
-            val d = arr.optJSONObject(i) ?: continue
-            val price = d.optString("p").toDoubleOrNull() ?: continue
-            val qty = d.optString("v").toDoubleOrNull() ?: continue
-            listener.onTrade(HunterTrade(
-                symbol = d.optString("s"), price = price, qty = qty, side = d.optString("S"),
-                timestamp = d.optLong("T", root.optLong("ts")), sequence = d.optLong("seq")
-            ))
+            val data = arr.optJSONObject(i) ?: continue
+            val price = data.optString("p").toDoubleOrNull() ?: continue
+            val qty = data.optString("v").toDoubleOrNull() ?: continue
+            listener.onTrade(
+                HunterTrade(
+                    symbol = data.optString("s"),
+                    price = price,
+                    qty = qty,
+                    side = data.optString("S"),
+                    timestamp = data.optLong("T", root.optLong("ts")),
+                    sequence = data.optLong("seq")
+                )
+            )
         }
     }
 
     private fun handleBook(root: JSONObject) {
-        val d = root.optJSONObject("data") ?: return
-        val symbol = d.optString("s").ifBlank { root.optString("topic").substringAfterLast('.') }
+        val data = root.optJSONObject("data") ?: return
+        val symbol = data.optString("s").ifBlank { root.optString("topic").substringAfterLast('.') }
         val type = root.optString("type")
-        val updateId = d.optLong("u")
-        val sequence = d.optLong("seq")
+        val updateId = data.optLong("u")
+        val sequence = data.optLong("seq")
         val book = books.getOrPut(symbol) { MutableBook() }
         var desync: String? = null
+
         synchronized(book) {
             val reset = type == "snapshot" || updateId == 1L
             if (reset) {
-                book.bids.clear(); book.asks.clear(); book.synchronized = true
+                book.bids.clear()
+                book.asks.clear()
+                book.synchronized = true
             } else if (!book.synchronized) {
                 desync = "delta reçu avant snapshot"
             } else if (book.updateId > 0L && updateId > 0L && updateId <= book.updateId) {
@@ -195,10 +228,12 @@ class OrderBookHunterWebSocket(
             } else if (book.sequence > 0L && sequence > 0L && sequence < book.sequence) {
                 desync = "sequence non monotone ${book.sequence}→$sequence"
             }
+
             if (desync == null) {
-                applyLevels(book.bids, d.optJSONArray("b"))
-                applyLevels(book.asks, d.optJSONArray("a"))
-                trim(book.bids); trim(book.asks)
+                applyLevels(book.bids, data.optJSONArray("b"))
+                applyLevels(book.asks, data.optJSONArray("a"))
+                trim(book.bids)
+                trim(book.asks)
                 book.updateId = updateId
                 book.sequence = sequence
                 book.timestamp = root.optLong("ts", System.currentTimeMillis())
@@ -207,15 +242,16 @@ class OrderBookHunterWebSocket(
                 book.synchronized = false
             }
         }
+
         if (desync != null) listener.onDesync(symbol, desync!!) else listener.onBookUpdated(symbol, root.optLong("ts"))
     }
 
     private fun applyLevels(target: TreeMap<Double, Double>, arr: JSONArray?) {
         if (arr == null) return
         for (i in 0 until arr.length()) {
-            val x = arr.optJSONArray(i) ?: continue
-            val price = x.optString(0).toDoubleOrNull() ?: continue
-            val qty = x.optString(1).toDoubleOrNull() ?: continue
+            val level = arr.optJSONArray(i) ?: continue
+            val price = level.optString(0).toDoubleOrNull() ?: continue
+            val qty = level.optString(1).toDoubleOrNull() ?: continue
             if (qty <= 0.0) target.remove(price) else target[price] = qty
         }
     }
@@ -224,12 +260,15 @@ class OrderBookHunterWebSocket(
         while (map.size > DEPTH) map.pollLastEntry()
     }
 
-    @Synchronized private fun scheduleReconnect() {
+    @Synchronized
+    private fun scheduleReconnect() {
         if (stopped.get() || scheduler.isShutdown || reconnect?.isDone == false) return
         failures++
         if (failures >= 2) endpointIndex = min(ENDPOINTS.lastIndex, 1)
         val delay = min(30L, 1L shl min(failures, 5))
-        reconnect = scheduler.schedule({ if (!stopped.get()) connect() }, delay, TimeUnit.SECONDS)
+        reconnect = scheduler.schedule({
+            if (!stopped.get()) connect()
+        }, delay, TimeUnit.SECONDS)
     }
 
     private fun normalizeSymbols(values: Collection<String>): List<String> = values
@@ -240,6 +279,17 @@ class OrderBookHunterWebSocket(
     companion object {
         const val DEPTH = 50
         const val MAX_SYMBOLS = 20
-        private val ENDPOINTS = listOf("wss://stream.bybit.eu/v5/public/spot", "wss://stream.bybit.com/v5/public/spot")
+        const val MAX_SPOT_TOPICS_PER_SUBSCRIBE = 10
+        private val ENDPOINTS = listOf(
+            "wss://stream.bybit.eu/v5/public/spot",
+            "wss://stream.bybit.com/v5/public/spot"
+        )
+
+        fun subscriptionBatches(symbols: Collection<String>): List<List<String>> {
+            val topics = symbols.distinct().take(MAX_SYMBOLS).flatMap { symbol ->
+                listOf("tickers.$symbol", "publicTrade.$symbol", "orderbook.$DEPTH.$symbol")
+            }
+            return topics.chunked(MAX_SPOT_TOPICS_PER_SUBSCRIBE)
+        }
     }
 }
