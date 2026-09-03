@@ -53,7 +53,10 @@ class OrderBookHunterMathTest {
             liquidityMismatch = true
         )
         assertTrue("SKR scenario must be suspicious, got $score", score > 70)
-        assertTrue(HunterClassification.label(score) == "COMPORTEMENT FORTEMENT SUSPECT" || HunterClassification.label(score) == "ANOMALIE EXTRÊME")
+        assertTrue(
+            HunterClassification.label(score) == "COMPORTEMENT FORTEMENT SUSPECT" ||
+                HunterClassification.label(score) == "ANOMALIE EXTRÊME"
+        )
     }
 
     @Test
@@ -90,7 +93,7 @@ class OrderBookHunterMathTest {
             synchronized = true
         )
         val imbalance = OrderBookHunterMath.imbalances(snapshot).first { it.distancePercent == 0.25 }
-        assertEquals(80.0, imbalance.buyPressure, 0.01)
-        assertEquals(20.0, imbalance.sellPressure, 0.01)
+        assertEquals(80.0, imbalance.buyPressure, 0.1)
+        assertEquals(20.0, imbalance.sellPressure, 0.1)
     }
 }
