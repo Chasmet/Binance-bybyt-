@@ -6,10 +6,13 @@ import android.content.Intent
 
 class OrderBookHunterBootReceiver : BroadcastReceiver() {
     override fun onReceive(context: Context, intent: Intent?) {
-        val db = OrderBookHunterDb(context.applicationContext)
+        val app = context.applicationContext
+        val db = OrderBookHunterDb(app)
         try {
-            if (db.watches(restoreOnly = true).isNotEmpty()) {
-                OrderBookHunterService.ensureRunning(context.applicationContext)
+            val hasRestorableWatches = db.watches(restoreOnly = true).isNotEmpty()
+            val mcpEnabled = OrderBookHunterService.isMcpControlEnabled(app)
+            if (hasRestorableWatches || mcpEnabled) {
+                runCatching { OrderBookHunterService.ensureRunning(app) }
             }
         } finally {
             db.close()
