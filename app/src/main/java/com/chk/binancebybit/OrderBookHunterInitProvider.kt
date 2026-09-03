@@ -11,6 +11,9 @@ class OrderBookHunterInitProvider : ContentProvider() {
         val app = context?.applicationContext as? Application ?: return false
         OrderBookHunterService.createChannels(app)
         HomeOrderBookHunterInjector.install(app)
+        if (OrderBookHunterService.isMcpControlEnabled(app)) {
+            runCatching { OrderBookHunterService.ensureRunning(app) }
+        }
         return true
     }
 
