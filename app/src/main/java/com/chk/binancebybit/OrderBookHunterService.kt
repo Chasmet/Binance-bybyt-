@@ -50,31 +50,50 @@ class OrderBookHunterService : Service() {
                 val author = intent?.getStringExtra(EXTRA_AUTHOR).orEmpty().ifBlank { "USER" }
                 if (text.isNotBlank()) runCatching { db.note(symbol, text, author) }
             }
+            ACTION_MCP_CONTROL -> {
+                val enabled = intent?.getBooleanExtra(EXTRA_ENABLED, true) ?: true
+                setMcpControlEnabled(this, enabled)
+            }
         }
+
         val watches = db.watches()
-        if (watches.isEmpty()) {
-            engine?.shutdown(); engine = null
-            mcpBridge?.stop(); mcpBridge = null
+        val mcpEnabled = isMcpControlEnabled(this)
+        if (watches.isEmpty() && !mcpEnabled) {
+            engine?.shutdown()
+            engine = null
+            mcpBridge?.stop()
+            mcpBridge = null
             stopForeground(STOP_FOREGROUND_REMOVE)
             stopSelf()
             return START_NOT_STICKY
         }
-        startForeground(NOTIFICATION_ID, foregroundNotification(watches.size))
-        if (engine == null) {
-            engine = OrderBookHunterEngine(this, ::onHunterEvent).also { it.start() }
+
+        startForeground(NOTIFICATION_ID, foregroundNotification(watches.size, mcpEnabled))
+
+        if (watches.isNotEmpty()) {
+            if (engine == null) engine = OrderBookHunterEngine(this, ::onHunterEvent).also { it.start() }
+            else engine?.reload()
         } else {
-            engine?.reload()
+            engine?.shutdown()
+            engine = null
         }
-        if (mcpBridge == null) {
-            mcpBridge = OrderBookHunterMcpBridge(this).also { it.start() }
+
+        if (mcpEnabled) {
+            if (mcpBridge == null) mcpBridge = OrderBookHunterMcpBridge(this).also { it.start() }
+        } else {
+            mcpBridge?.stop()
+            mcpBridge = null
         }
+
         updateForeground()
         return START_STICKY
     }
 
     override fun onDestroy() {
-        mcpBridge?.stop(); mcpBridge = null
-        engine?.shutdown(); engine = null
+        mcpBridge?.stop()
+        mcpBridge = null
+        engine?.shutdown()
+        engine = null
         db.close()
         super.onDestroy()
     }
@@ -104,18 +123,24 @@ class OrderBookHunterService : Service() {
 
     private fun updateForeground() {
         val count = runCatching { db.watches().size }.getOrDefault(0)
-        if (count <= 0) return
-        val nm = getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
-        nm.notify(NOTIFICATION_ID, foregroundNotification(count))
+        val mcpEnabled = isMcpControlEnabled(this)
+        if (count <= 0 && !mcpEnabled) return
+        (getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager)
+            .notify(NOTIFICATION_ID, foregroundNotification(count, mcpEnabled))
     }
 
-    private fun foregroundNotification(count: Int): Notification {
+    private fun foregroundNotification(count: Int, mcpEnabled: Boolean): Notification {
         val open = Intent(this, OrderBookHunterActivity::class.java)
         val pending = PendingIntent.getActivity(this, 5300, open, PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE)
+        val content = when {
+            count > 0 -> "$count marché${if (count > 1) "s" else ""} surveillé${if (count > 1) "s" else ""} • Bybit EU Spot${if (mcpEnabled) " • ChatGPT actif" else ""}"
+            mcpEnabled -> "Prêt • contrôle ChatGPT/MCP actif • aucune crypto suivie"
+            else -> "Aucune surveillance active"
+        }
         return Notification.Builder(this, CHANNEL_SERVICE)
             .setSmallIcon(R.drawable.app_icon)
-            .setContentTitle("CHK OrderBook Hunter actif")
-            .setContentText("$count marché${if (count > 1) "s" else ""} surveillé${if (count > 1) "s" else ""} • Bybit EU Spot")
+            .setContentTitle("CHK OrderBook Hunter")
+            .setContentText(content)
             .setOngoing(true)
             .setOnlyAlertOnce(true)
             .setCategory(Notification.CATEGORY_SERVICE)
@@ -133,7 +158,7 @@ class OrderBookHunterService : Service() {
             PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
         )
         val title = when (event.type) {
-            HunterEventType.WALL_ABSORPTION -> "${event.symbol} • support/résistance réellement exécuté"
+            HunterEventType.WALL_ABSORPTION -> "${event.symbol} • mur réellement exécuté"
             HunterEventType.WALL_CANCELLED_NEAR_TOUCH -> "${event.symbol} • mur disparu près du prix"
             HunterEventType.REPEATED_WALL_REPOSITIONING -> "${event.symbol} • repositionnements répétés"
             HunterEventType.ORDERBOOK_LIQUIDITY_MISMATCH -> "${event.symbol} • carnet/volume incohérents"
@@ -141,16 +166,17 @@ class OrderBookHunterService : Service() {
             HunterEventType.SCORE_CHANGED -> "${event.symbol} • score ${event.score}/100"
             else -> "${event.symbol} • OrderBook Hunter"
         }
-        val text = event.detail.take(220)
+        val body = event.detail.take(220)
         val notification = Notification.Builder(this, CHANNEL_ALERTS)
             .setSmallIcon(R.drawable.app_icon)
             .setContentTitle(title)
-            .setContentText(text)
-            .setStyle(Notification.BigTextStyle().bigText(text))
+            .setContentText(body)
+            .setStyle(Notification.BigTextStyle().bigText(body))
             .setAutoCancel(true)
             .setContentIntent(pending)
             .build()
-        (getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager).notify((event.id.hashCode() and 0x7fffffff), notification)
+        (getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager)
+            .notify(event.id.hashCode() and 0x7fffffff, notification)
     }
 
     companion object {
@@ -160,27 +186,42 @@ class OrderBookHunterService : Service() {
         const val ACTION_ALERTS = "com.chk.binancebybit.hunter.ALERTS"
         const val ACTION_CLEAR = "com.chk.binancebybit.hunter.CLEAR"
         const val ACTION_NOTE = "com.chk.binancebybit.hunter.NOTE"
+        const val ACTION_MCP_CONTROL = "com.chk.binancebybit.hunter.MCP_CONTROL"
         const val EXTRA_SYMBOL = "hunter_symbol"
         const val EXTRA_ENABLED = "hunter_enabled"
         const val EXTRA_TEXT = "hunter_text"
         const val EXTRA_AUTHOR = "hunter_author"
+
         private const val CHANNEL_SERVICE = "chk_orderbook_hunter_service"
         private const val CHANNEL_ALERTS = "chk_orderbook_hunter_alerts"
         private const val NOTIFICATION_ID = 5299
+        private const val PREFS = "chk_orderbook_hunter_preferences"
+        private const val KEY_MCP_ENABLED = "mcp_control_enabled"
 
         fun createChannels(context: Context) {
             if (Build.VERSION.SDK_INT < Build.VERSION_CODES.O) return
             val nm = context.getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
-            nm.createNotificationChannel(NotificationChannel(
-                CHANNEL_SERVICE,
-                "OrderBook Hunter actif",
-                NotificationManager.IMPORTANCE_LOW
-            ).apply { description = "Notification permanente lorsque le suivi temporel des carnets Bybit est actif." })
-            nm.createNotificationChannel(NotificationChannel(
-                CHANNEL_ALERTS,
-                "Alertes OrderBook Hunter",
-                NotificationManager.IMPORTANCE_HIGH
-            ).apply { description = "Murs déplacés, annulations proches, absorption, sweep et anomalies significatives." })
+            nm.createNotificationChannel(
+                NotificationChannel(CHANNEL_SERVICE, "OrderBook Hunter actif", NotificationManager.IMPORTANCE_LOW).apply {
+                    description = "Surveillance Bybit et disponibilité du contrôle ChatGPT/MCP."
+                }
+            )
+            nm.createNotificationChannel(
+                NotificationChannel(CHANNEL_ALERTS, "Alertes OrderBook Hunter", NotificationManager.IMPORTANCE_HIGH).apply {
+                    description = "Murs déplacés, annulations proches, absorption, sweep et anomalies significatives."
+                }
+            )
+        }
+
+        fun isMcpControlEnabled(context: Context): Boolean = context.applicationContext
+            .getSharedPreferences(PREFS, Context.MODE_PRIVATE)
+            .getBoolean(KEY_MCP_ENABLED, true)
+
+        fun setMcpControlEnabled(context: Context, enabled: Boolean) {
+            context.applicationContext.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
+                .edit()
+                .putBoolean(KEY_MCP_ENABLED, enabled)
+                .apply()
         }
 
         fun ensureRunning(context: Context) {
@@ -191,24 +232,39 @@ class OrderBookHunterService : Service() {
         fun startWatch(context: Context, symbol: String) = send(context, ACTION_START_WATCH, symbol)
         fun stopWatch(context: Context, symbol: String) = send(context, ACTION_STOP_WATCH, symbol)
         fun clearHistory(context: Context, symbol: String) = send(context, ACTION_CLEAR, symbol)
+
         fun setAlerts(context: Context, symbol: String, enabled: Boolean) {
             val intent = Intent(context, OrderBookHunterService::class.java)
                 .setAction(ACTION_ALERTS)
                 .putExtra(EXTRA_SYMBOL, symbol)
                 .putExtra(EXTRA_ENABLED, enabled)
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) context.startForegroundService(intent) else context.startService(intent)
+            start(context, intent)
         }
+
+        fun setMcpControl(context: Context, enabled: Boolean) {
+            val intent = Intent(context, OrderBookHunterService::class.java)
+                .setAction(ACTION_MCP_CONTROL)
+                .putExtra(EXTRA_ENABLED, enabled)
+            start(context, intent)
+        }
+
         fun addNote(context: Context, symbol: String, text: String, author: String = "USER") {
             val intent = Intent(context, OrderBookHunterService::class.java)
                 .setAction(ACTION_NOTE)
                 .putExtra(EXTRA_SYMBOL, symbol)
                 .putExtra(EXTRA_TEXT, text)
                 .putExtra(EXTRA_AUTHOR, author)
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) context.startForegroundService(intent) else context.startService(intent)
+            start(context, intent)
         }
 
         private fun send(context: Context, action: String, symbol: String) {
-            val intent = Intent(context, OrderBookHunterService::class.java).setAction(action).putExtra(EXTRA_SYMBOL, symbol)
+            val intent = Intent(context, OrderBookHunterService::class.java)
+                .setAction(action)
+                .putExtra(EXTRA_SYMBOL, symbol)
+            start(context, intent)
+        }
+
+        private fun start(context: Context, intent: Intent) {
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) context.startForegroundService(intent) else context.startService(intent)
         }
     }
