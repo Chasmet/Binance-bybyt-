@@ -24,6 +24,12 @@
             android:exported="false"
             android:initOrder="100" />
 
+        <provider
+            android:name=".OrderBookHunterInitProvider"
+            android:authorities="${applicationId}.orderbook-hunter-init"
+            android:exported="false"
+            android:initOrder="90" />
+
         <activity
             android:name=".MainActivityV4"
             android:exported="true"
@@ -36,6 +42,12 @@
 
         <activity
             android:name=".BotActivity"
+            android:exported="false"
+            android:screenOrientation="portrait"
+            android:theme="@android:style/Theme.Material.NoActionBar" />
+
+        <activity
+            android:name=".OrderBookHunterActivity"
             android:exported="false"
             android:screenOrientation="portrait"
             android:theme="@android:style/Theme.Material.NoActionBar" />
@@ -86,6 +98,11 @@
             android:exported="false"
             android:foregroundServiceType="dataSync" />
 
+        <service
+            android:name=".OrderBookHunterService"
+            android:exported="false"
+            android:foregroundServiceType="dataSync" />
+
         <receiver android:name=".AlertCheckReceiver" android:exported="false" />
         <receiver android:name=".TradeProposalReceiver" android:exported="false" />
         <receiver
@@ -96,6 +113,12 @@
             </intent-filter>
         </receiver>
         <receiver android:name=".BootReceiver" android:enabled="true" android:exported="true">
+            <intent-filter>
+                <action android:name="android.intent.action.BOOT_COMPLETED" />
+                <action android:name="android.intent.action.MY_PACKAGE_REPLACED" />
+            </intent-filter>
+        </receiver>
+        <receiver android:name=".OrderBookHunterBootReceiver" android:enabled="true" android:exported="true">
             <intent-filter>
                 <action android:name="android.intent.action.BOOT_COMPLETED" />
                 <action android:name="android.intent.action.MY_PACKAGE_REPLACED" />

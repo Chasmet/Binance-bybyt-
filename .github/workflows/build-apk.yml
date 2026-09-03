@@ -32,6 +32,9 @@ jobs:
         with:
           gradle-version: '8.10.2'
 
+      - name: Run unit tests
+        run: gradle :app:testDebugUnitTest --stacktrace
+
       - name: Fetch stable signing material from Render using GitHub OIDC
         if: env.HAS_STABLE_SIGNING == 'true'
         shell: bash
