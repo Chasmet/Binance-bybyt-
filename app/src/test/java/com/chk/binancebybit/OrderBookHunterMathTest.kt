@@ -35,6 +35,17 @@ class OrderBookHunterMathTest {
     }
 
     @Test
+    fun ordinaryBalancedDepthDoesNotCreateFalseWall() {
+        val bids = (1..20).map { HunterBookLevel(1.0 - it * 0.0005, 1000.0 + (it % 3) * 20.0) }
+        val asks = (1..20).map { HunterBookLevel(1.0 + it * 0.0005, 1000.0 + (it % 4) * 15.0) }
+        val snapshot = HunterBookSnapshot("NORMALUSDC", bids, asks, 10, 10, 1, 1, true)
+        val ticker = HunterTicker("NORMALUSDC", 1.0, 0.1, 5_000_000.0, 5_000_000.0, 1)
+        val walls = OrderBookHunterMath.candidateWalls(snapshot, ticker, 1)
+        assertTrue(walls.first.isEmpty())
+        assertTrue(walls.second.isEmpty())
+    }
+
+    @Test
     fun skrRepeatedRetreatScenarioScoresAboveSeventy() {
         val now = System.currentTimeMillis()
         val events = listOf(
@@ -81,6 +92,20 @@ class OrderBookHunterMathTest {
     }
 
     @Test
+    fun publicTradesAtWallMeasureRealOppositeSideExecution() {
+        val now = System.currentTimeMillis()
+        val trades = listOf(
+            HunterTrade("SKRUSDC", 0.01900, 300_000.0, "Sell", now),
+            HunterTrade("SKRUSDC", 0.01900, 150_000.0, "Sell", now + 1),
+            HunterTrade("SKRUSDC", 0.01900, 900_000.0, "Buy", now + 2)
+        )
+        val buyAbsorption = OrderBookHunterMath.tradeVolumeAtWall(trades, HunterWallSide.BUY, 0.01900, now - 1)
+        val sellAbsorption = OrderBookHunterMath.tradeVolumeAtWall(trades, HunterWallSide.SELL, 0.01900, now - 1)
+        assertEquals(450_000.0, buyAbsorption, 0.001)
+        assertEquals(900_000.0, sellAbsorption, 0.001)
+    }
+
+    @Test
     fun imbalanceIsCalculatedFromVisibleDepthOnly() {
         val snapshot = HunterBookSnapshot(
             "AUSDC",
@@ -95,5 +120,21 @@ class OrderBookHunterMathTest {
         val imbalance = OrderBookHunterMath.imbalances(snapshot).first { it.distancePercent == 0.25 }
         assertEquals(80.0, imbalance.buyPressure, 0.1)
         assertEquals(20.0, imbalance.sellPressure, 0.1)
+    }
+
+    @Test
+    fun twentyMarketsRespectBybitSpotTenTopicSubscriptionLimit() {
+        val symbols = (1..20).map { "T${it}USDC" }
+        val batches = OrderBookHunterWebSocket.subscriptionBatches(symbols)
+        assertEquals(60, batches.sumOf { it.size })
+        assertEquals(6, batches.size)
+        assertTrue(batches.all { it.size <= OrderBookHunterWebSocket.MAX_SPOT_TOPICS_PER_SUBSCRIBE })
+    }
+
+    @Test
+    fun symbolNormalizationKeepsHunterOnUsdcMarkets() {
+        assertEquals("SKRUSDC", OrderBookHunterStore.normalizeSymbol("skr"))
+        assertEquals("SKRUSDC", OrderBookHunterStore.normalizeSymbol("SKR/USDC"))
+        assertEquals("SKRUSDC", OrderBookHunterStore.normalizeSymbol("SKRUSDT"))
     }
 }
