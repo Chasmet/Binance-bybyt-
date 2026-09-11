@@ -22,13 +22,13 @@ class AutoTradeExecutor(context: Context) {
     private val receipts = TradeResultOutbox(app, proposalClient)
 
     fun processEligiblePending(): Summary {
-        if (!policy.enabled()) return Summary(0, 0, 0)
         if (!running.compareAndSet(false, true)) return Summary(0, 0, 0)
         var checked = 0
         var executed = 0
         var failed = 0
         try {
             receipts.flush()
+            if (!policy.enabled()) return Summary(0, 0, 0)
             // Only read/reconcile already claimed orders; never submit them again.
             val first = proposalClient.list()
             for (proposal in first.processing) {

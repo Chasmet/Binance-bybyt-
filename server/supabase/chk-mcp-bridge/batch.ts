@@ -66,7 +66,7 @@ export async function createBatch(sb: any, account: string, body: any) {
   const {error} = await sb.from("chk_trade_proposals").insert(rows);
   if (error) {
     if (error.code !== "23505") throw error;
-    const {data, error: readError} = await sb.from("chk_trade_proposals").select("*").eq("account_fingerprint", account).in("id", ids);
+    const {data, error: readError} = await sb.from("chk_trade_proposals").select("*").eq("account_fingerprint", account).eq("source", `chatgpt-batch:${batchId}`);
     if (readError) throw readError;
     if (!data || data.length !== rows.length || rows.some((row: any) => {
       const old = data.find((x: any) => x.id === row.id);

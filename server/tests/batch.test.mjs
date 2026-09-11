@@ -9,7 +9,7 @@ function mock(rows = []) {
  db.from = () => {
   const q = {select(){return this},eq(k,v){this[k]=v; return this},in(k,v){this.ids=v;return this},
    insert(batch){db.inserts++;if(batch.some(x=>db.rows.some(y=>y.id===x.id)))return Promise.resolve({error:{code:'23505'}}); db.rows.push(...batch.map(x=>({...x,status:'executed',bybit_order_id:`bybit-${x.id}`,result:{orderStatus:'New'}})));return Promise.resolve({error:null})},
-   then(resolve,reject){return Promise.resolve({data:db.rows.filter(x=>(!this.account_fingerprint||x.account_fingerprint===this.account_fingerprint)&&(!this.ids||this.ids.includes(x.id))),error:null}).then(resolve,reject)}};
+   then(resolve,reject){return Promise.resolve({data:db.rows.filter(x=>(!this.account_fingerprint||x.account_fingerprint===this.account_fingerprint)&&(!this.source||x.source===this.source)&&(!this.ids||this.ids.includes(x.id))),error:null}).then(resolve,reject)}};
   return q;
  };return db;
 }
@@ -47,6 +47,7 @@ test('batch inserts all five atomically and a retry preserves IDs',async()=>{
  const a=await createBatch(db,'owner',body),b=await createBatch(db,'owner',body);
  assert.equal(a.allConfirmed,true);assert.equal(a.total,5);assert.equal(db.rows.length,5);
  assert.deepEqual(a.proposalIds,b.proposalIds);
+ await assert.rejects(createBatch(db,'owner',{...body,orders:body.orders.slice(0,4)}),/batch_id_conflict/);
  await assert.rejects(createBatch(db,'owner',{...body,orders:body.orders.map(x=>({...x,limitPrice:2}))}),/batch_id_conflict/);
 });
 test('invalid fifth order cannot create the first four',async()=>{
