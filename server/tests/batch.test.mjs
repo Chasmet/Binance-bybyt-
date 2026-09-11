@@ -57,3 +57,9 @@ test('invalid fifth order cannot create the first four',async()=>{
 test('duplicate IDs cannot be counted twice',async()=>{
  await assert.rejects(waitForBatch(mock(),'owner',[ids[0],ids[0]],0),/invalid_proposal_ids/);
 });
+test('MCP adapter requires follow-up for incomplete batches',async()=>{
+ const {handleBatchTool,batchTools}=await import('../mcp/batch-tools.mjs');
+ const r=await handleBatchTool('create_trade_batch',{batchId:ids[0]},async()=>({ok:true,allConfirmed:false,pending:4,proposalIds:ids}));
+ assert.match(r.content[0].text,/Continuer wait_trade_batch/);
+ assert.equal(batchTools[0].inputSchema.properties.orders.items.properties.quoteAmountUsdc.maximum,30);
+});
