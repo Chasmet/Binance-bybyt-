@@ -11,11 +11,15 @@ Application Android personnelle CHK Crypto regroupant **Binance + Bybit EU**, av
 - Package Android : `com.chk.binancebybit`
 - Bybit EU : `https://api.bybit.eu`
 - Marché autorisé : **Spot CRYPTO/USDC uniquement**
-- Plafond actuel : **10 USDC par ordre**
+- Plafond actuel : **30 USDC par ordre (évolution en validation ; voir audit)**
 
 Tout autre dépôt, service Render, fonction Supabase ou ancien MCP est uniquement une **infrastructure technique / compatibilité**. Il ne doit jamais être traité comme un second projet CHK Crypto ou comme une autre source de vérité.
 
-## Principe de sécurité impératif
+## Évolution Bot / MCP en validation
+
+Voir [l’audit du 11 septembre 2026](docs/AUDIT_BOT_MCP_2026-09-11.md). L’Auto-Trade peut traiter les nouvelles propositions LIMIT sans deuxième clic si les autorisations correspondantes sont activées dans Android. Les plafonds journaliers restent applicables. Le raccordement des outils de lot au serveur Render reste requis.
+
+## Parcours manuel historique
 
 ```text
 ChatGPT analyse
@@ -166,3 +170,4 @@ Le workflow officiel est :
 `.github/workflows/build-apk.yml`
 
 Toute évolution Android doit être validée par une compilation réelle avant d’être annoncée comme installable.
+

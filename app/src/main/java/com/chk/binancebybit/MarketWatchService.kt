@@ -21,11 +21,10 @@ class MarketWatchService : Service() {
     private val samples = ConcurrentHashMap<String, ArrayDeque<Pair<Long, Double>>>()
     private val smartCooldown = ConcurrentHashMap<String, Long>()
     private var worker: Thread? = null
+    private var orderWorker: Thread? = null
     private var wakeLock: PowerManager.WakeLock? = null
     private var lastRemoteSyncAt = 0L
     private var lastBotCheckAt = 0L
-    private var lastAutoCancelCheckAt = 0L
-    private var lastAutoTradeCheckAt = 0L
     private lateinit var botEngine: BotEngine
     private lateinit var autoCancelExecutor: AutoCancelExecutor
     private lateinit var autoTradeExecutor: AutoTradeExecutor
@@ -49,6 +48,13 @@ class MarketWatchService : Service() {
                 setReferenceCounted(false)
                 acquire(10 * 60_000L)
             }
+            orderWorker = Thread {
+                while (running.get()) {
+                    runCatching { autoCancelExecutor.processEligiblePending() }
+                    runCatching { autoTradeExecutor.processEligiblePending() }
+                    try { Thread.sleep(5_000L) } catch (_: InterruptedException) { break }
+                }
+            }.apply { name = "CHK-OrderQueue"; isDaemon = true; start() }
             worker = Thread { runLoop() }.apply {
                 name = "CHK-MarketWatch"
                 isDaemon = true
@@ -61,6 +67,8 @@ class MarketWatchService : Service() {
     override fun onDestroy() {
         running.set(false)
         worker?.interrupt()
+        orderWorker?.interrupt()
+        orderWorker = null
         wakeLock?.let { if (it.isHeld) it.release() }
         wakeLock = null
         super.onDestroy()
@@ -120,20 +128,7 @@ class MarketWatchService : Service() {
             lastBotCheckAt = now
         }
 
-        val autoPolicy = AutoTradePolicyStore(this)
 
-        // Cancellation/replacement is a separate opt-in. We cancel first so a replacement proposal
-        // created by the server can be picked up by AutoTradeExecutor in the same minute.
-        if (now - lastAutoCancelCheckAt >= 60_000L && autoPolicy.enabled() && autoPolicy.allowCancelReplace()) {
-            runCatching { autoCancelExecutor.processEligiblePending() }
-            lastAutoCancelCheckAt = now
-        }
-
-        // Auto-Trade is opt-in and reuses the same server claim + Bybit safety path as manual confirmation.
-        if (now - lastAutoTradeCheckAt >= 60_000L && autoPolicy.enabled()) {
-            runCatching { autoTradeExecutor.processEligiblePending() }
-            lastAutoTradeCheckAt = now
-        }
 
         if (store.smartWatchEnabled()) {
             val threshold = store.smartMoveThresholdPct()
@@ -282,3 +277,4 @@ class MarketWatchService : Service() {
         }
     }
 }
+

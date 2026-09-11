@@ -78,8 +78,8 @@ class BotEngine(
                         BotRuleStore.ACTION_PREPARE_BUY,
                         BotRuleStore.ACTION_PREPARE_SELL -> {
                             val side = if (rule.action == BotRuleStore.ACTION_PREPARE_BUY) "BUY" else "SELL"
-                            val quote = rule.amountUsdc.coerceIn(1.0, 10.0)
-                            val base = if (side == "SELL") quote / max(ticker.lastPrice, 0.00000001) else null
+                            val quote = rule.amountUsdc.coerceIn(1.01, 30.0)
+                            val base = if (side == "SELL") quote / max(rule.targetPrice, 0.00000001) else null
                             val proposal = TradeProposalClient(app, secureStore).createBotProposal(
                                 symbol = rule.symbol,
                                 side = side,
@@ -327,3 +327,4 @@ class BotEngine(
         }
     }
 }
+

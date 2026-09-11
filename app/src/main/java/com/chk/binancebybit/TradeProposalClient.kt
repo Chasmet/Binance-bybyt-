@@ -16,7 +16,8 @@ class TradeProposalClient(
 
     data class Bundle(
         val pending: List<TradeProposal>,
-        val recent: JSONArray
+        val recent: JSONArray,
+        val processing: List<TradeProposal> = emptyList()
     )
 
     fun list(): Bundle {
@@ -32,7 +33,11 @@ class TradeProposalClient(
             val o = pendingJson.optJSONObject(i) ?: continue
             pending += TradeProposal.fromJson(o)
         }
-        return Bundle(pending, root.optJSONArray("recent") ?: JSONArray())
+        val processingJson = root.optJSONArray("processing") ?: JSONArray()
+        val processing = (0 until processingJson.length()).mapNotNull {
+            processingJson.optJSONObject(it)?.let(TradeProposal::fromJson)
+        }
+        return Bundle(pending, root.optJSONArray("recent") ?: JSONArray(), processing)
     }
 
     /**
@@ -102,6 +107,13 @@ class TradeProposalClient(
         })
     }
 
+    fun reportBlocked(proposalId: String, reason: String) {
+        val identity = workspaceSync.ensureIdentity()
+        postJson(JSONObject().put("action", "report_blocked")
+            .put("deviceId", identity.deviceId).put("deviceSecret", identity.deviceSecret)
+            .put("id", proposalId).put("reason", reason))
+    }
+
     fun deleteHistory(proposalId: String): String {
         val identity = workspaceSync.ensureIdentity()
         return postJson(JSONObject().apply {
@@ -146,3 +158,4 @@ class TradeProposalClient(
         const val BOT_ENDPOINT = "https://gflnvlolwqnvzxyqsrir.supabase.co/functions/v1/chk-bot-proposals"
     }
 }
+

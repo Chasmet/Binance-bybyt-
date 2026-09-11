@@ -124,7 +124,10 @@ class BybitTradeClient(
             }
         }
 
-        // La règle locale reste > 1 USDC et <= 10 USDC. Les contraintes spécifiques
+        require(estimatedNotional <= proposal.quoteAmountUsdc + 1e-9) {
+            "La quantité dépasse le budget USDC de la proposition"
+        }
+        // La règle locale reste > 1 USDC et <= 30 USDC. Les contraintes spécifiques
         // d'une paire sont laissées à l'API Bybit EU, qui reste l'autorité finale.
         var recoveredState: JSONObject? = null
         val created = try {
@@ -135,7 +138,7 @@ class BybitTradeClient(
                 recoveredState = recovery.state
                 null
             } else if (recovery.lookupSucceeded) {
-                throw IllegalStateException("Ordre refusé par Bybit : ${createError.message ?: "raison inconnue"}", createError)
+                throw BybitExecutionUncertainException("Envoi non confirmé : aucun ordre retrouvé pour le moment. Aucun renvoi automatique.", createError)
             } else {
                 throw BybitExecutionUncertainException(
                     "État Bybit incertain après l'envoi. Ne renvoie pas l'ordre : CHK Crypto doit d'abord vérifier orderLinkId $deterministicLinkId.",
@@ -151,14 +154,24 @@ class BybitTradeClient(
             ?: recoveredState?.optString("orderLinkId").takeUnless { it.isNullOrBlank() }
             ?: deterministicLinkId
 
-        val state = recoveredState ?: pollOrderState(proposal.symbol, orderId, linkId)
+        val state = try {
+            recoveredState ?: pollOrderState(proposal.symbol, orderId, linkId)
+        } catch (error: Exception) {
+            throw BybitExecutionUncertainException("Ordre envoyé, confirmation Bybit indisponible. Aucun renvoi.", error)
+        }
+        if (state == null || state.optString("orderId").isBlank() || state.optString("orderStatus").isBlank()) {
+            throw BybitExecutionUncertainException("Ordre envoyé, en attente de vérification Bybit. Aucun renvoi.")
+        }
+        if (state.optString("orderStatus").equals("Rejected", true)) {
+            throw IllegalStateException("Ordre rejeté par Bybit : ${state.optString("rejectReason")}")
+        }
         val status = state?.optString("orderStatus").takeUnless { it.isNullOrBlank() } ?: "SENT"
         val execQty = state?.optString("cumExecQty")?.toDoubleOrNull() ?: 0.0
         val execValue = state?.optString("cumExecValue")?.toDoubleOrNull() ?: 0.0
         val avg = state?.optString("avgPrice")?.toDoubleOrNull() ?: 0.0
 
         return TradeExecutionResult(
-            orderId = orderId,
+            orderId = state.optString("orderId").ifBlank { orderId },
             orderLinkId = linkId,
             orderStatus = status,
             symbol = proposal.symbol,
@@ -415,6 +428,7 @@ class BybitTradeClient(
 
     companion object {
         const val MIN_ORDER_USDC = 1.0
-        const val MAX_ORDER_USDC = 10.0
+        const val MAX_ORDER_USDC = 30.0
     }
 }
+

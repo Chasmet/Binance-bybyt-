@@ -55,7 +55,7 @@ class RenderTradeOrdersPanel(
             setTypeface(Typeface.DEFAULT, Typeface.BOLD)
         })
         page.addView(TextView(activity).apply {
-            text = "Clés sécurisées sur Render • Bybit EU Spot • maximum 10 USDC"
+            text = "Clés sécurisées sur Render • Bybit EU Spot • maximum 30 USDC"
             textSize = 12f
             setTextColor(muted)
             setPadding(0, dp(3), 0, dp(12))
@@ -405,3 +405,4 @@ class RenderTradeOrdersPanel(
         }.start()
     }
 }
+

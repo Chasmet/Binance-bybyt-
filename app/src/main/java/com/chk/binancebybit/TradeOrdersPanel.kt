@@ -79,7 +79,7 @@ class TradeOrdersPanel(
             setTypeface(Typeface.DEFAULT, Typeface.BOLD)
         })
         addView(TextView(activity).apply {
-            text = "Propositions ChatGPT • Bybit EU Spot • limite 10 USDC"
+            text = "Propositions ChatGPT • Bybit EU Spot • limite 30 USDC"
             textSize = 12f
             setTextColor(muted)
             setPadding(0, dp(3), 0, 0)
@@ -483,3 +483,4 @@ class TradeOrdersPanel(
         }.start()
     }
 }
+

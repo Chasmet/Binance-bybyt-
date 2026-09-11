@@ -129,7 +129,7 @@ class AutoTradeActivity : Activity() {
                 setPadding(0, dp(5), 0, dp(12))
             })
 
-            addView(fieldLabel("Maximum par ordre", "1,01 à 10 USDC"))
+            addView(fieldLabel("Maximum par ordre", "1,01 à 30 USDC"))
             addView(maxOrder)
             addView(fieldLabel("Maximum total par jour", "Plafond cumulé des BUY/SELL automatiques"))
             addView(daily)
@@ -168,7 +168,7 @@ class AutoTradeActivity : Activity() {
             addView(body(
                 "• Spot CRYPTO/USDC uniquement\n" +
                     "• BUY/SELL automatiques : LIMIT uniquement\n" +
-                    "• plafond 10 USDC maximum par ordre\n" +
+                    "• plafond 30 USDC maximum par ordre\n" +
                     "• plafond journalier + nombre d'ordres/jour\n" +
                     "• annulation : un Order ID précis seulement\n" +
                     "• aucune ancienne demande exécutée lors de l'activation\n" +
@@ -192,9 +192,9 @@ class AutoTradeActivity : Activity() {
         policy.setAllowBotRules(botRules.isChecked)
         policy.setAllowChatGptProposals(chatGpt.isChecked)
         policy.setAllowCancelReplace(cancelReplace.isChecked)
-        policy.setMaxOrderUsdc(maxOrder.text.toString().replace(',', '.').toDoubleOrNull() ?: 10.0)
+        policy.setMaxOrderUsdc(maxOrder.text.toString().replace(',', '.').toDoubleOrNull() ?: 30.0)
         policy.setDailyCapUsdc(daily.text.toString().replace(',', '.').toDoubleOrNull() ?: 30.0)
-        policy.setMaxOrdersPerDay((count.text.toString().replace(',', '.').toDoubleOrNull() ?: 3.0).toInt())
+        policy.setMaxOrdersPerDay((count.text.toString().replace(',', '.').toDoubleOrNull() ?: 5.0).toInt())
 
         val cancelChange = when {
             !previousCancel && policy.allowCancelReplace() -> " • annulation/remplacement AUTORISÉ"
@@ -284,3 +284,4 @@ class AutoTradeActivity : Activity() {
     private fun dp(v: Int) = (v * resources.displayMetrics.density).toInt()
     private fun fmt(v: Double) = String.format(Locale.FRANCE, "%.2f", v)
 }
+
