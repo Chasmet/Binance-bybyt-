@@ -7,7 +7,7 @@ import {orderLinkId} from '../mcp/trading-config.mjs';
 const batchId='00000000-0000-0000-0000-000000000001', account='test-account';
 const order={symbol:'RENDERUSDC',side:'SELL',orderType:'LIMIT',quoteAmountUsdc:7.35,baseQuantity:5,limitPrice:1.47};
 const proposalId=proposalIdsForBatch(account,batchId,1)[0];
-const accepted={id:proposalId,proposalStatus:'executed',status:'OPEN',resolved:true,confirmed:true};
+const accepted={id:proposalId,proposalStatus:'executed',status:'FILLED',resolved:true,confirmed:true};
 test('catalog exposes batches first and shares the 30 USDC ceiling without altering chart bounds',()=>{
  const ext=createTradingExtension({bridge:async()=>{}});
  const tools=ext.patchTools([{name:'zoom_chart',inputSchema:{properties:{steps:{maximum:10}}}},
@@ -95,4 +95,18 @@ test('failed Bybit lookup is never treated as absence eligible for retry',async(
  const reader=createBybitOrderReader({apiKey:'dummy',apiSecret:'dummy',now:()=>100000,fetchImpl:async url=>
   url.endsWith('/time')?{ok:true,json:async()=>({retCode:0,time:100000})}:{ok:false,status:500,json:async()=>({retCode:10000,retMsg:'timeout'})}});
  await assert.rejects(reader({id:proposalId,symbol:order.symbol,side:order.side}),/Bybit lookup/);
+});
+
+test('stale OPEN status cannot become a final report when live Bybit lookup fails',async()=>{
+ let clock=0;const ext=createTradingExtension({now:()=>clock,sleep:async ms=>{clock+=ms;},readOrder:async()=>{throw new Error('timeout')},
+ bridge:async()=>({allConfirmed:true,reportReady:true,pending:0,orders:[{...accepted,status:'OPEN'}]})});
+ const out=await ext.handle({id:1},'wait_trade_batch',{proposalIds:[proposalId]});
+ assert.equal(out.result.structuredContent.reportReady,false);assert.equal(out.result.structuredContent.allConfirmed,false);
+ assert.equal(out.result.structuredContent.orders[0].status,'UNKNOWN');
+});
+test('cancel replacement accepts 30 USDC and keeps an uncertain response discoverable',async()=>{
+ const sent=[];const ext=createTradingExtension({bridge:async p=>{sent.push(p);throw new Error('HTTP 500')}});
+ const out=await ext.handle({id:1},'create_cancel_proposal',{symbol:order.symbol,target_order_id:'target',replacement_quote_amount_usdc:30});
+ assert.equal(sent[0].replacementQuoteAmountUsdc,30);assert.equal(out.result.structuredContent.nextTool,'list_cancel_proposals');
+ assert.equal(sent.length,1);
 });

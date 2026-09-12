@@ -16,7 +16,7 @@ const pending=(ids,e)=>({ok:true,allConfirmed:false,reportReady:false,proposalId
   orders:ids.map(id=>({id,orderLinkId:orderLinkId(id),status:'UNKNOWN',confirmed:false,resolved:false})),
   verificationError:String(e?.message||e),retryable:true,nextTool:'wait_trade_batch',nextArguments:{proposalIds:ids}});
 export function createTradingExtension({bridge,accountFingerprint='',readOrder=async()=>null,instrument=async()=>({}),now=Date.now,sleep=ms=>new Promise(r=>setTimeout(r,ms))}) {
-  const names=new Set([...batchTools.map(t=>t.name),'create_trade_proposal','list_trade_proposals']);
+  const names=new Set([...batchTools.map(t=>t.name),'create_trade_proposal','list_trade_proposals','create_cancel_proposal']);
   function patchTools(existing) {
     const tools=structuredClone(existing);
     for(const t of tools){
@@ -25,6 +25,7 @@ export function createTradingExtension({bridge,accountFingerprint='',readOrder=a
       }
       if(t.name==='create_trade_proposal'){
         t.description='Crée et vérifie un ordre autorisé. request_id UUID stable assure les retries sans doublon. Sans request_id, demandes strictement identiques regroupées pendant dix minutes ; nouveau request_id pour une nouvelle intention identique. '+TRADING_INSTRUCTIONS;
+        t.inputSchema.properties.order_type={type:'string',enum:['LIMIT']};
         t.inputSchema.properties.request_id={type:'string',format:'uuid'};
         t.annotations={readOnlyHint:false,destructiveHint:true,idempotentHint:true,openWorldHint:true};
       }
@@ -42,12 +43,19 @@ export function createTradingExtension({bridge,accountFingerprint='',readOrder=a
     do{
       try{
         data=await bridge({action:'wait_trade_batch',proposalIds:ids,timeoutMs:0});
+        const unverified=new Map();
         for(const o of data.orders||[]){
-          if(!['processing','executed'].includes(o.proposalStatus)||o.status==='FILLED'||now()>deadline)continue;
-          try{const observed=await readOrder(o,{deadline});if(observed)await bridge({action:'reconcile_trade_result',id:o.id,observed});}
-          catch(e){data.verificationWarning=String(e.message||e);}
+          if(!['processing','executed'].includes(o.proposalStatus)||o.status==='FILLED')continue;
+          if(now()>=deadline){if(o.proposalStatus==='executed')unverified.set(o.id,'Délai de vérification atteint.');continue;}
+          try{const observed=await readOrder(o,{deadline});if(observed)await bridge({action:'reconcile_trade_result',id:o.id,observed});else if(o.proposalStatus==='executed')unverified.set(o.id,'OrderLinkId non retrouvé ; état actuel à vérifier.');}
+          catch(e){unverified.set(o.id,String(e.message||e));}
         }
         data={...data,...await bridge({action:'wait_trade_batch',proposalIds:ids,timeoutMs:0}),proposalIds:ids};
+        if(unverified.size){
+          data.orders=data.orders.map(o=>unverified.has(o.id)?{...o,lastKnownStatus:o.status,status:'UNKNOWN',resolved:false,confirmed:false,verificationError:unverified.get(o.id)}:o);
+          data.allConfirmed=false;data.reportReady=false;data.pending=data.orders.filter(o=>!o.resolved).length;
+          data.verificationWarning='Lecture Bybit indisponible : état actuel à vérifier, aucun nouvel envoi.';
+        }
         if(data.reportReady||data.allConfirmed||data.pending===0||now()>=deadline)break;
       }catch(e){data=pending(ids,e);if(now()>=deadline)break;}
       await sleep(Math.min(750,Math.max(0,deadline-now())));
@@ -70,14 +78,27 @@ export function createTradingExtension({bridge,accountFingerprint='',readOrder=a
         const data=await bridge({action:'list_trade_proposals',limit:args.limit??100});
         const ids=(data.proposals||[]).filter(p=>p.status==='processing').slice(0,20).map(p=>p.id);
         const verification=ids.length?await wait({proposalIds:ids,timeoutMs:12000}):null;
-        const sc={...data,verification};return reply(msg,{structuredContent:sc,content:[{type:'text',text:TRADING_INSTRUCTIONS+'\n'+JSON.stringify(sc)}]});
+        const refreshed=verification?await bridge({action:'list_trade_proposals',limit:args.limit??100}):data;
+        const sc={...refreshed,verification};return reply(msg,{structuredContent:sc,content:[{type:'text',text:TRADING_INSTRUCTIONS+'\n'+JSON.stringify(sc)}]});
+      }
+      if(name==='create_cancel_proposal'){
+        const amount=args.replacement_quote_amount_usdc;
+        if(amount!=null&&(!Number.isFinite(Number(amount))||Number(amount)<=1||Number(amount)>MAX_ORDER_USDC))throw new Error('invalid_replacement_amount');
+        try{
+          const data=await bridge({action:'create_cancel_proposal',symbol:args.symbol,targetOrderId:args.target_order_id,
+            targetOrderLinkId:args.target_order_link_id??'',rationale:args.rationale,confidence:args.confidence,
+            expiresInMinutes:args.expires_in_minutes,replacementSide:args.replacement_side,replacementOrderType:args.replacement_order_type,
+            replacementQuoteAmountUsdc:amount,replacementBaseQuantity:args.replacement_base_quantity,replacementLimitPrice:args.replacement_limit_price,
+            replacementRationale:args.replacement_rationale,replacementConfidence:args.replacement_confidence});
+          return reply(msg,{structuredContent:data,content:[{type:'text',text:'Demande transmise au bot APK, sous les autorisations annuler/remplacer. Vérifier list_cancel_proposals ; ne pas annoncer l’annulation avant preuve Bybit.\n'+JSON.stringify(data)}]});
+        }catch(e){return reply(msg,{isError:true,structuredContent:{ok:false,creationUncertain:true,targetOrderId:args.target_order_id,nextTool:'list_cancel_proposals'},content:[{type:'text',text:'Réponse indisponible : vérifier list_cancel_proposals pour cet Order ID avant toute nouvelle demande. '+String(e.message||e)}]});}
       }
       if(name==='create_trade_proposal'){
         const amount=Number(args.quote_amount_usdc);
         if(!Number.isFinite(amount)||amount<=1||amount>MAX_ORDER_USDC)throw new Error(`Montant requis : >1 et <=${MAX_ORDER_USDC} USDC`);
         let batchId=args.request_id;
         if(!batchId){
-          const h=crypto.createHash('sha256').update(JSON.stringify([accountFingerprint,args,Math.floor(now()/600000)])).digest('hex').slice(0,32);
+          const h=crypto.createHash('sha256').update(JSON.stringify([accountFingerprint,args.symbol,args.side,args.order_type,Number(args.quote_amount_usdc),args.base_quantity??null,args.limit_price??null,args.rationale??'',Math.floor(now()/600000)])).digest('hex').slice(0,32);
           batchId=`${h.slice(0,8)}-${h.slice(8,12)}-${h.slice(12,16)}-${h.slice(16,20)}-${h.slice(20)}`;
         }
         args={batchId,orders:[{symbol:args.symbol,side:args.side,orderType:args.order_type,quoteAmountUsdc:amount,
