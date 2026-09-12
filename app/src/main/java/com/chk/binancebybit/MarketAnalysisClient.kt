@@ -62,7 +62,7 @@ data class IndicatorSnapshot(
         append("Divergence : $divergence\n")
         append("Pattern : $pattern\n")
         append("Synthèse : $summary\n")
-        append("Cette analyse est informative. Toute proposition d'ordre reste soumise à confirmation manuelle dans CHK Crypto.")
+        append("Cette analyse est informative. Les propositions suivent les autorisations Auto-Trade de CHK Crypto ; le placement doit être vérifié sur Bybit.")
     }
 
     private fun f(v: Double): String = String.format(Locale.US, "%.6f", v).trimEnd('0').trimEnd('.')
@@ -352,3 +352,4 @@ class MarketAnalysisClient {
         } finally { c.disconnect() }
     }
 }
+

@@ -12,7 +12,7 @@ Deno.serve(async(req:Request)=>{
   const body=await req.json(); const action=String(body?.action||"list").trim().toLowerCase();
   const sb=createClient(Deno.env.get("SUPABASE_URL")!,Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!,{auth:{persistSession:false}});
   const expected=String(Deno.env.get("SUPABASE_MCP_TOKEN")||""); const supplied=String(req.headers.get("x-chk-token")||""); const serverOk=!!expected&&secureEqual(expected,supplied);
-  const appProjection="id,exchange,symbol,side,order_type,quote_amount_usdc,base_quantity,limit_price,rationale,confidence,source,status,expires_at,bybit_order_id,result,created_at,updated_at,executed_at,processing_started_at,processing_owner";
+  const appProjection="id,exchange,symbol,side,order_type,quote_amount_usdc,base_quantity,limit_price,rationale,confidence,source,status,expires_at,bybit_order_id,result,created_at,updated_at,executed_at,processing_started_at,processing_owner,batch_id,batch_index,submission_tracking,submission_attempts,last_submission_at";
   const serverProjection=`${appProjection},account_fingerprint`;
 
   if(action==="server_create_proposal"){
@@ -57,8 +57,8 @@ Deno.serve(async(req:Request)=>{
   const fp=String(device.account_fingerprint||""); if(!fp)return new Response(JSON.stringify({error:"bybit_not_synced"}),{status:409,headers}); const now=new Date().toISOString(); await sb.from("chk_trade_proposals").update({status:"expired",updated_at:now}).eq("account_fingerprint",fp).eq("status","pending").lt("expires_at",now);
 
   if(action==="list"){
-   const {data:pending,error:e1}=await sb.from("chk_trade_proposals").select(appProjection).eq("account_fingerprint",fp).eq("status","pending").order("created_at",{ascending:true}).limit(100); if(e1)throw e1;
-   const {data:recent,error:e2}=await sb.from("chk_trade_proposals").select(appProjection).eq("account_fingerprint",fp).neq("status","pending").order("updated_at",{ascending:false}).limit(30); if(e2)throw e2; const {data:processing,error:e3}=await sb.from("chk_trade_proposals").select(appProjection).eq("account_fingerprint",fp).eq("status","processing").eq("processing_owner",deviceId).order("created_at",{ascending:true}).limit(100); if(e3)throw e3;
+   const {data:pending,error:e1}=await sb.from("chk_trade_proposals").select(appProjection).eq("account_fingerprint",fp).eq("status","pending").order("created_at",{ascending:true}).order("batch_index",{ascending:true}).limit(100); if(e1)throw e1;
+   const {data:recent,error:e2}=await sb.from("chk_trade_proposals").select(appProjection).eq("account_fingerprint",fp).neq("status","pending").order("updated_at",{ascending:false}).limit(30); if(e2)throw e2; const {data:processing,error:e3}=await sb.from("chk_trade_proposals").select(appProjection).eq("account_fingerprint",fp).eq("status","processing").eq("processing_owner",deviceId).order("created_at",{ascending:true}).order("batch_index",{ascending:true}).limit(100); if(e3)throw e3;
    return new Response(JSON.stringify({ok:true,pending:pending||[],recent:recent||[],processing:processing||[]}),{status:200,headers});
   }
   if(action==="report_blocked"){
@@ -69,13 +69,24 @@ Deno.serve(async(req:Request)=>{
   }
   if(action==="claim"){
    const id=String(body?.id||"").trim(); if(!/^[a-f0-9-]{36}$/i.test(id))return new Response(JSON.stringify({error:"invalid_proposal_id"}),{status:400,headers}); const at=new Date().toISOString();
-   const {data,error}=await sb.from("chk_trade_proposals").update({status:"processing",result:{},processing_started_at:at,processing_owner:deviceId,updated_at:at}).eq("id",id).eq("account_fingerprint",fp).eq("status","pending").gt("expires_at",at).select(appProjection).maybeSingle(); if(error)throw error; if(!data)return new Response(JSON.stringify({error:"proposal_not_claimable"}),{status:409,headers}); return new Response(JSON.stringify({ok:true,proposal:data}),{status:200,headers});
+   const {data:target,error:targetError}=await sb.from('chk_trade_proposals').select('batch_id,batch_index').eq('id',id).eq('account_fingerprint',fp).maybeSingle(); if(targetError)throw targetError;
+   if(target?.batch_id){
+    const {data:prior,error:priorError}=await sb.from('chk_trade_proposals').select('status,bybit_order_id,result').eq('account_fingerprint',fp).eq('batch_id',target.batch_id).lt('batch_index',target.batch_index); if(priorError)throw priorError;
+    if((prior||[]).some(p=>['pending','processing'].includes(p.status)||(p.status==='executed'&&(!p.bybit_order_id||!['New','PartiallyFilled','Filled','Cancelled','PartiallyFilledCanceled'].includes(p.result?.orderStatus)))))return new Response(JSON.stringify({error:'batch_predecessor_unconfirmed'}),{status:409,headers});
+   }
+   const {data,error}=await sb.from("chk_trade_proposals").update({status:"processing",result:{},processing_started_at:at,processing_owner:deviceId,updated_at:at,submission_tracking:body.clientProtocol===2}).eq("id",id).eq("account_fingerprint",fp).eq("status","pending").gt("expires_at",at).select(appProjection).maybeSingle(); if(error)throw error; if(!data)return new Response(JSON.stringify({error:"proposal_not_claimable"}),{status:409,headers}); return new Response(JSON.stringify({ok:true,proposal:data}),{status:200,headers});
+  }
+  if(action==='prepare_submission'){
+   const id=String(body.id||'');if(!/^[a-f0-9-]{36}$/i.test(id))return new Response(JSON.stringify({error:'invalid_proposal_id'}),{status:400,headers});
+   const {data,error}=await sb.rpc('chk_reserve_submission',{p_id:id,p_account:fp,p_owner:deviceId});if(error)throw error;
+   if(!data?.length)return new Response(JSON.stringify({error:'submission_not_allowed',message:'Ordre déjà résolu, délai de reprise, expiration ou maximum de deux tentatives atteint.'}),{status:409,headers});
+   return new Response(JSON.stringify({ok:true,proposal:data[0]}),{status:200,headers});
   }
   if(action==="mark_result"){
    const id=String(body?.id||"").trim(); const status=String(body?.status||"").toLowerCase(); if(!/^[a-f0-9-]{36}$/i.test(id)||!["executed","error","rejected"].includes(status))return new Response(JSON.stringify({error:"invalid_update"}),{status:400,headers}); const expectedStatus=status==="rejected"?"pending":"processing"; const result=body?.result&&typeof body.result==="object"&&!Array.isArray(body.result)?body.result:{}; const update:any={status,result,bybit_order_id:String(body?.bybitOrderId||"").trim().slice(0,120)||null,updated_at:new Date().toISOString()}; if(status==="executed")update.executed_at=new Date().toISOString();
    let q=sb.from("chk_trade_proposals").update(update).eq("id",id).eq("account_fingerprint",fp).eq("status",expectedStatus); if(expectedStatus==="processing")q=q.eq("processing_owner",deviceId); const {data,error}=await q.select("id,status,bybit_order_id,updated_at,executed_at").maybeSingle(); if(error)throw error; if(!data){
     const {data:existing,error:retryError}=await sb.from("chk_trade_proposals").select("id,status,bybit_order_id,processing_owner").eq("id",id).eq("account_fingerprint",fp).maybeSingle(); if(retryError)throw retryError;
-    if(existing&&existing.status===status&&existing.processing_owner===deviceId&&String(existing.bybit_order_id||"")===String(update.bybit_order_id||""))return new Response(JSON.stringify({ok:true,duplicate:true,proposal:existing}),{status:200,headers});
+    if(existing&&(existing.status===status||existing.status==="executed"&&!!existing.bybit_order_id)&&existing.processing_owner===deviceId&&String(existing.bybit_order_id||"")===String(update.bybit_order_id||""))return new Response(JSON.stringify({ok:true,duplicate:true,proposal:existing}),{status:200,headers});
     return new Response(JSON.stringify({error:"proposal_state_conflict"}),{status:409,headers});
    } return new Response(JSON.stringify({ok:true,proposal:data}),{status:200,headers});
   }

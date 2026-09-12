@@ -81,7 +81,7 @@ class AutoTradePolicyStore(context: Context) {
         return Decision(true, "OK")
     }
 
-    fun canExecute(proposal: TradeProposal): Decision {
+    fun canExecute(proposal: TradeProposal, reserved: Boolean = false): Decision {
         resetIfNewDay()
         if (!enabled()) return Decision(false, "Auto-Trade désactivé")
         val createdAt = proposal.createdAt?.let { runCatching { Instant.parse(it).toEpochMilli() }.getOrNull() }
@@ -99,8 +99,9 @@ class AutoTradePolicyStore(context: Context) {
         if (!isBot && isChat && !allowChatGptProposals()) return Decision(false, "Auto-confirmation ChatGPT désactivée")
         if (isCancelReplacement && !allowCancelReplace()) return Decision(false, "Remplacement automatique désactivé")
         if (!isBot && !isChat && !isCancelReplacement) return Decision(false, "Source de proposition non autorisée")
-        if (todayOrders() >= maxOrdersPerDay()) return Decision(false, "Limite quotidienne d'ordres atteinte")
-        if (todayNotional() + proposal.quoteAmountUsdc > dailyCapUsdc() + 1e-9) return Decision(false, "Plafond quotidien USDC atteint")
+        val alreadyReserved = reserved && prefs.getStringSet("counted_ids", emptySet())!!.contains(proposal.id)
+        if (!alreadyReserved && todayOrders() >= maxOrdersPerDay()) return Decision(false, "Limite quotidienne d'ordres atteinte")
+        if (!alreadyReserved && todayNotional() + proposal.quoteAmountUsdc > dailyCapUsdc() + 1e-9) return Decision(false, "Plafond quotidien USDC atteint")
         return Decision(true, "OK")
     }
 

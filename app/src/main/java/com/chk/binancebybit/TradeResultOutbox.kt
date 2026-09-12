@@ -14,10 +14,17 @@ class TradeResultOutbox(context: Context, private val client: TradeProposalClien
         check(prefs.edit().putString(id, receipt.toString()).commit()) { "Confirmation à synchroniser : stockage indisponible" }
     }
 
-    fun flush() = synchronized(lock) {
+    fun flush(onlyId: String? = null) = synchronized(lock) {
+        var attempted = 0
         for ((id, raw) in prefs.all) {
+            if (onlyId != null && onlyId != id) continue
+            if (onlyId == null && attempted >= 2) break
             runCatching {
                 val receipt = JSONObject(raw as String)
+                if (receipt.optLong("retryAfter", 0) > System.currentTimeMillis()) return@runCatching
+                attempted++
+                receipt.put("retryAfter", System.currentTimeMillis() + 30_000L)
+                prefs.edit().putString(id, receipt.toString()).commit()
                 val response = JSONObject(client.markResult(id, receipt.getString("status"),
                     receipt.getString("orderId"), receipt.getJSONObject("result")))
                 check(response.optBoolean("ok")) { "Confirmation serveur absente" }

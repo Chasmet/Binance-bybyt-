@@ -11,6 +11,7 @@ import android.graphics.RectF
 import android.view.GestureDetector
 import android.view.MotionEvent
 import android.view.ScaleGestureDetector
+import android.view.ViewConfiguration
 import android.view.View
 import android.widget.OverScroller
 import java.io.ByteArrayOutputStream
@@ -91,6 +92,11 @@ class CandlestickChartView(context: Context) : View(context) {
     private var panAccumulator = 0f
     private var priceAxisScaling = false
     private var moved = false
+    private enum class TouchMode { IDLE, PENDING, PAN, PRICE, CROSSHAIR, PINCH, PAGE }
+    private var touchMode = TouchMode.IDLE
+    private var activePointerId = MotionEvent.INVALID_POINTER_ID
+    private val touchSlop = ViewConfiguration.get(context).scaledTouchSlop
+    private var deferredSnapshot: IndicatorSnapshot? = null
 
     private val scroller = OverScroller(context)
     private var lastScrollerX = 0
@@ -98,9 +104,13 @@ class CandlestickChartView(context: Context) : View(context) {
     private val scaler = ScaleGestureDetector(context, object : ScaleGestureDetector.SimpleOnScaleGestureListener() {
         private var anchorRatio = 0.5f
         private var anchorGlobal = 0.0
+        private var startSpan = 1f
+        private var startCount = 100
 
         override fun onScaleBegin(detector: ScaleGestureDetector): Boolean {
             stopFling()
+            touchMode = TouchMode.PINCH
+            clearCrosshair()
             parent?.requestDisallowInterceptTouchEvent(true)
             val all = snapshot?.candles ?: return false
             if (all.isEmpty()) return false
@@ -109,15 +119,20 @@ class CandlestickChartView(context: Context) : View(context) {
             anchorRatio = ((detector.focusX - left) / (right - left).coerceAtLeast(1f)).coerceIn(0f, 1f)
             val end = visibleEnd(all.size)
             val start = visibleStart(end)
-            anchorGlobal = start.toDouble() + anchorRatio.toDouble() * (end - start).coerceAtLeast(1).toDouble()
+            val cell = (right - left) / (end - start).coerceAtLeast(1)
+            anchorGlobal = start.toDouble() + anchorRatio.toDouble() * (end - start).coerceAtLeast(1) - panAccumulator / cell
+            panAccumulator = 0f
+            startSpan = detector.currentSpan.coerceAtLeast(1f)
+            startCount = visibleCount
             return true
         }
 
         override fun onScale(detector: ScaleGestureDetector): Boolean {
             val all = snapshot?.candles ?: return false
             if (all.isEmpty()) return false
-            val newCount = (visibleCount / detector.scaleFactor).roundToInt().coerceIn(MIN_VISIBLE, min(MAX_VISIBLE, all.size.coerceAtLeast(MIN_VISIBLE)))
-            if (newCount == visibleCount) return true
+            val newCount = (startCount * startSpan / detector.currentSpan.coerceAtLeast(1f)).roundToInt()
+                .coerceIn(MIN_VISIBLE.coerceAtMost(all.size), min(MAX_VISIBLE, all.size).coerceAtLeast(1))
+            anchorRatio = ((detector.focusX - plotLeft()) / (plotRight() - plotLeft()).coerceAtLeast(1f)).coerceIn(0f, 1f)
             visibleCount = newCount
             val maxStart = (all.size - visibleCount).coerceAtLeast(0)
             val newStart = (anchorGlobal - anchorRatio.toDouble() * visibleCount.toDouble()).roundToInt().coerceIn(0, maxStart)
@@ -139,7 +154,8 @@ class CandlestickChartView(context: Context) : View(context) {
         }
 
         override fun onSingleTapUp(e: MotionEvent): Boolean {
-            if (!moved && e.x < plotRight()) {
+            if (!moved && touchMode != TouchMode.PINCH && e.x < plotRight()) {
+                performClick()
                 crosshairActive = true
                 updateSelection(e.x, e.y)
                 emitStateChanged()
@@ -153,7 +169,8 @@ class CandlestickChartView(context: Context) : View(context) {
         }
 
         override fun onLongPress(e: MotionEvent) {
-            if (e.x <= plotRight()) {
+            if (touchMode == TouchMode.PENDING && e.x <= plotRight()) {
+                touchMode = TouchMode.CROSSHAIR
                 crosshairActive = true
                 updateSelection(e.x, e.y)
                 parent?.requestDisallowInterceptTouchEvent(true)
@@ -163,9 +180,12 @@ class CandlestickChartView(context: Context) : View(context) {
         }
 
         override fun onFling(e1: MotionEvent?, e2: MotionEvent, velocityX: Float, velocityY: Float): Boolean {
-            if (crosshairActive || priceAxisScaling || scaler.isInProgress || abs(velocityX) <= abs(velocityY) * 1.15f) return false
+            if (touchMode != TouchMode.PAN || scaler.isInProgress || abs(velocityX) <= abs(velocityY) * 1.15f) return false
             lastScrollerX = 0
-            scroller.fling(0, 0, velocityX.toInt(), 0, -width * 8, width * 8, 0, 0)
+            val cell = (plotRight() - plotLeft()) / visibleCount.coerceAtLeast(1)
+            scroller.fling(0, 0, velocityX.toInt(), 0,
+                (-offsetFromEnd * cell - panAccumulator).toInt(),
+                ((maxOffset() - offsetFromEnd) * cell - panAccumulator).toInt(), 0, 0)
             postInvalidateOnAnimation()
             return true
         }
@@ -178,14 +198,25 @@ class CandlestickChartView(context: Context) : View(context) {
 
     fun setSnapshot(value: IndicatorSnapshot, preserveViewport: Boolean = true) {
         val sameChart = snapshot?.requestedSymbol == value.requestedSymbol && snapshot?.interval == value.interval
+        if (preserveViewport && sameChart && touchMode != TouchMode.IDLE) {
+            deferredSnapshot = value
+            return
+        }
+        val previous = snapshot?.candles.orEmpty()
+        val anchorTime = if (sameChart && offsetFromEnd > 0 && previous.isNotEmpty()) previous[visibleStart(visibleEnd(previous.size))].time else null
         snapshot = value
         if (!preserveViewport || !sameChart) {
             offsetFromEnd = 0
+            panAccumulator = 0f
             visibleCount = min(100, value.candles.size).coerceAtLeast(MIN_VISIBLE.coerceAtMost(value.candles.size))
             clearCrosshair()
         } else {
             visibleCount = visibleCount.coerceIn(MIN_VISIBLE.coerceAtMost(value.candles.size), min(MAX_VISIBLE, value.candles.size).coerceAtLeast(1))
             offsetFromEnd = offsetFromEnd.coerceIn(0, maxOffset())
+        }
+        if (anchorTime != null) {
+            val index = value.candles.indexOfFirst { it.time == anchorTime }
+            if (index >= 0) offsetFromEnd = (value.candles.size - index - visibleCount).coerceIn(0, maxOffset())
         }
         prepareIndicators()
         invalidate()
@@ -237,6 +268,7 @@ class CandlestickChartView(context: Context) : View(context) {
     }
 
     fun applyViewport(value: ChartViewportState) {
+        panAccumulator = 0f
         visibleCount = value.visibleCount.coerceIn(MIN_VISIBLE, MAX_VISIBLE)
         offsetFromEnd = value.offsetFromEnd.coerceIn(0, maxOffset())
         autoScale = value.autoScale
@@ -250,6 +282,7 @@ class CandlestickChartView(context: Context) : View(context) {
     fun zoomOut() = zoomBy(0.74f)
 
     private fun zoomBy(factor: Float) {
+        panAccumulator = 0f
         val all = snapshot?.candles ?: return
         if (all.isEmpty()) return
         val end = visibleEnd(all.size)
@@ -273,12 +306,14 @@ class CandlestickChartView(context: Context) : View(context) {
     }
 
     fun goToLatest() {
+        panAccumulator = 0f
         offsetFromEnd = 0
         clearCrosshair()
         invalidate(); emitStateChanged()
     }
 
     fun resetView() {
+        panAccumulator = 0f
         visibleCount = min(100, snapshot?.candles?.size ?: 100).coerceAtLeast(MIN_VISIBLE.coerceAtMost(snapshot?.candles?.size ?: MIN_VISIBLE))
         offsetFromEnd = 0
         autoScale = true
@@ -376,6 +411,9 @@ class CandlestickChartView(context: Context) : View(context) {
             val buy = level.side.uppercase(Locale.US) == "BUY"
             drawHorizontalLevel(canvas, level.price, left, right, lo, hi, ::y, if (buy) orderBuyPaint else orderSellPaint, level.label.ifBlank { "${if (buy) "BUY" else "SELL"} ${format(level.price)}" })
         }
+        canvas.save()
+        canvas.clipRect(left, top, right, timeBottom)
+        canvas.translate(panAccumulator, 0f)
         drawTechnicalDrawings(canvas, all, start, end, left, right, lo, hi, ::y)
 
         val maxVol = candles.maxOf { it.volume }.coerceAtLeast(1e-12)
@@ -414,12 +452,13 @@ class CandlestickChartView(context: Context) : View(context) {
         }
 
         drawTradeMarkers(canvas, all, start, end, left, cell, ::y)
-        drawCurrentPrice(canvas, s.lastPrice, left, right, lo, hi, ::y)
         if (indicators.volume) canvas.drawText("VOL", left + dp(3f), volumeTop + dp(10f), smallText)
         drawRsi(canvas, start, end, left, right, rsiTop, rsiBottom)
         drawMacd(canvas, start, end, left, right, macdTop, macdBottom)
         canvas.drawText("ATR ${indicators.atrPeriod}: ${format(atrCurrent)}", right - dp(3f), top + dp(10f), Paint(smallText).apply { textAlign = Paint.Align.RIGHT })
 
+        canvas.restore()
+        drawCurrentPrice(canvas, s.lastPrice, left, right, lo, hi, ::y)
         drawCrosshair(canvas, all, start, end, left, right, top, macdBottom, lo, hi, ::y, cell, s.interval)
     }
 
@@ -505,7 +544,7 @@ class CandlestickChartView(context: Context) : View(context) {
         val idx = selectedGlobalIndex ?: return
         if (idx !in start until end) return
         val c = all[idx]
-        val x = left + cell * (idx - start + 0.5f)
+        val x = left + cell * (idx - start + 0.5f) + panAccumulator
         val p = (selectedPrice ?: c.close).coerceIn(lo, hi)
         val cy = mapper(p)
         canvas.drawLine(x, top, x, bottom, crosshairPaint)
@@ -580,7 +619,7 @@ class CandlestickChartView(context: Context) : View(context) {
         val left=plotLeft(); val right=plotRight(); val top=dp(12f); val priceBottom=height*0.58f
         if(x !in left..right || yPos<top || yPos>priceBottom)return
         val cell=(right-left)/count.coerceAtLeast(1)
-        selectedGlobalIndex=start+((x-left)/cell).toInt().coerceIn(0,count-1)
+        selectedGlobalIndex=start+((x-left-panAccumulator)/cell).toInt().coerceIn(0,count-1)
         val candles=all.subList(start,end); val maxP=candles.maxOf{it.high}; val minP=candles.minOf{it.low}
         val raw=(maxP-minP).coerceAtLeast(maxP*0.0005).coerceAtLeast(1e-12); val center=(maxP+minP)/2.0
         val range=if(autoScale)raw*1.16 else raw*1.16*priceScale; val hi=center+range/2; val lo=center-range/2
@@ -588,31 +627,64 @@ class CandlestickChartView(context: Context) : View(context) {
         selectedPrice=lo+ratio*(hi-lo); invalidate()
     }
 
+    override fun performClick(): Boolean { super.performClick(); return true }
+
     override fun onTouchEvent(event: MotionEvent): Boolean {
+        if (event.actionMasked == MotionEvent.ACTION_DOWN) {
+            activePointerId = event.getPointerId(0)
+            downX = event.x; downY = event.y; lastTouchX = event.x; lastTouchY = event.y; moved = false
+            priceAxisScaling = event.x > plotRight()
+            touchMode = if (priceAxisScaling) TouchMode.PRICE else TouchMode.PENDING
+            parent?.requestDisallowInterceptTouchEvent(true)
+        }
         scaler.onTouchEvent(event)
         gestures.onTouchEvent(event)
-        when(event.actionMasked){
-            MotionEvent.ACTION_DOWN -> {
-                downX=event.x; downY=event.y; lastTouchX=event.x; lastTouchY=event.y; moved=false; panAccumulator=0f
-                priceAxisScaling=event.x>plotRight(); parent?.requestDisallowInterceptTouchEvent(true)
+        when (event.actionMasked) {
+            MotionEvent.ACTION_POINTER_DOWN -> { moved = true; touchMode = TouchMode.PINCH; stopFling() }
+            MotionEvent.ACTION_POINTER_UP -> {
+                val remaining = (0 until event.pointerCount).firstOrNull { it != event.actionIndex }
+                if (remaining != null) {
+                    activePointerId = event.getPointerId(remaining)
+                    lastTouchX = event.getX(remaining); lastTouchY = event.getY(remaining)
+                    downX = lastTouchX; downY = lastTouchY
+                }
+                touchMode = if (event.pointerCount - 1 == 1) TouchMode.PENDING else TouchMode.PINCH
+                moved = true
             }
             MotionEvent.ACTION_MOVE -> {
-                if(event.pointerCount>1 || scaler.isInProgress){ parent?.requestDisallowInterceptTouchEvent(true); return true }
-                val dx=event.x-lastTouchX; val dy=event.y-lastTouchY
-                if(abs(event.x-downX)>dp(5f)||abs(event.y-downY)>dp(5f))moved=true
-                when {
-                    priceAxisScaling -> {
-                        autoScale=false
-                        val factor=(1.0 + dy/height.coerceAtLeast(1)*2.0).coerceIn(0.85,1.15)
-                        priceScale=(priceScale*factor).coerceIn(0.2,8.0); invalidate()
+                if (event.pointerCount > 1 || scaler.isInProgress) return true
+                val index = event.findPointerIndex(activePointerId)
+                if (index < 0) return true
+                val x = event.getX(index); val y = event.getY(index)
+                val dx = x - lastTouchX; val dy = y - lastTouchY
+                val totalX = x - downX; val totalY = y - downY
+                if (abs(totalX) > touchSlop || abs(totalY) > touchSlop) {
+                    moved = true
+                    if (touchMode == TouchMode.PENDING) {
+                        touchMode = if (abs(totalY) > abs(totalX) * 1.2f) TouchMode.PAGE else TouchMode.PAN
+                        if (touchMode == TouchMode.PAN) clearCrosshair()
                     }
-                    crosshairActive -> updateSelection(event.x,event.y)
-                    abs(event.x-downX)>abs(event.y-downY)*0.75f -> panPixels(dx)
                 }
-                lastTouchX=event.x; lastTouchY=event.y
+                when (touchMode) {
+                    TouchMode.PRICE -> {
+                        autoScale = false
+                        priceScale = (priceScale * kotlin.math.exp(dy / height.coerceAtLeast(1) * 2.0)).coerceIn(0.2, 8.0)
+                        postInvalidateOnAnimation()
+                    }
+                    TouchMode.CROSSHAIR -> updateSelection(x, y)
+                    TouchMode.PAN -> panPixels(dx)
+                    TouchMode.PAGE -> parent?.requestDisallowInterceptTouchEvent(false)
+                    else -> Unit
+                }
+                lastTouchX = x; lastTouchY = y
             }
             MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> {
-                priceAxisScaling=false; parent?.requestDisallowInterceptTouchEvent(false); emitStateChanged()
+                if (event.actionMasked == MotionEvent.ACTION_CANCEL) stopFling()
+                priceAxisScaling = false; activePointerId = MotionEvent.INVALID_POINTER_ID; touchMode = TouchMode.IDLE
+                parent?.requestDisallowInterceptTouchEvent(false)
+                val deferred = deferredSnapshot; deferredSnapshot = null
+                if (deferred != null) setSnapshot(deferred, preserveViewport = true)
+                emitStateChanged()
             }
         }
         return true
@@ -626,15 +698,14 @@ class CandlestickChartView(context: Context) : View(context) {
     }
 
     private fun panPixels(dx: Float) {
-        val all=snapshot?.candles ?: return
-        if(all.isEmpty())return
-        val cell=(plotRight()-plotLeft())/visibleCount.coerceAtLeast(1)
-        panAccumulator+=dx
-        val shift=(panAccumulator/cell.coerceAtLeast(1f)).toInt()
-        if(shift!=0){
-            offsetFromEnd=(offsetFromEnd+shift).coerceIn(0,maxOffset())
-            panAccumulator-=shift*cell; clearCrosshair(); invalidate()
-        }
+        val all = snapshot?.candles ?: return
+        if (all.isEmpty()) return
+        val cell = (plotRight() - plotLeft()) / visibleCount.coerceAtLeast(1)
+        val position = (offsetFromEnd + (panAccumulator + dx) / cell.coerceAtLeast(1f)).coerceIn(0f, maxOffset().toFloat())
+        offsetFromEnd = position.toInt()
+        panAccumulator = (position - offsetFromEnd) * cell
+        clearCrosshair()
+        postInvalidateOnAnimation()
     }
 
     private fun prepareIndicators() {
@@ -711,3 +782,4 @@ class CandlestickChartView(context: Context) : View(context) {
 
     companion object{private const val MIN_VISIBLE=12;private const val MAX_VISIBLE=600}
 }
+

@@ -1,4 +1,4 @@
-import { createBatch, waitForBatch } from "./batch.ts";
+import { createBatch, waitForBatch, reconcileResult } from "./batch.ts";
 import "jsr:@supabase/functions-js/edge-runtime.d.ts";
 import { createClient } from "jsr:@supabase/supabase-js@2";
 
@@ -27,6 +27,7 @@ Deno.serve(async(req:Request)=>{
   const account=fp(b?.accountFingerprint);
 
   if(action==="create_trade_batch") return out(200,await createBatch(sb,account,b));
+  if(action==="reconcile_trade_result") return out(200,await reconcileResult(sb,account,b));
   if(action==="wait_trade_batch") return out(200,{ok:true,...await waitForBatch(sb,account,b.proposalIds,b.timeoutMs)});
   if(action==="list_notes"){
     const {data,error}=await sb.from("chk_crypto_notes").select("id,exchange,kind,content,source,status,created_at,updated_at").eq("account_fingerprint",account).eq("status","active").order("created_at",{ascending:false}).limit(Math.max(1,Math.min(200,Number(b?.limit||100))));if(error)throw error;return out(200,{ok:true,notes:data||[]});
@@ -86,5 +87,5 @@ Deno.serve(async(req:Request)=>{
   }
 
   return out(400,{error:"unknown_action"});
- }catch(e){console.error("chk-mcp-bridge",e);return out(500,{error:"bridge_failed",message:String(e?.message||e).slice(0,180)});}
+ }catch(e){console.error("chk-mcp-bridge",e);const message=String(e?.message||e).slice(0,180);const invalid=/^(invalid_|batch_id_conflict|proposal_not_found)/.test(message);return out(invalid?400:503,{error:invalid?message:"bridge_unavailable",message,retryable:!invalid});}
 });

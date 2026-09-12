@@ -13,6 +13,7 @@ import javax.crypto.Mac
 import javax.crypto.spec.SecretKeySpec
 
 class BybitExecutionUncertainException(message: String, cause: Throwable? = null) : Exception(message, cause)
+class BybitApiException(val code: Long, message: String) : Exception(message)
 
 class BybitTradeClient(
     private val apiKey: String,
@@ -26,7 +27,7 @@ class BybitTradeClient(
      * Exécute uniquement une proposition déjà réservée côté Supabase (status=processing).
      * Aucun appel à /v5/order/create n'est possible depuis ce chemin sans claim préalable.
      */
-    fun execute(proposal: TradeProposal): TradeExecutionResult {
+    fun execute(proposal: TradeProposal, beforeSubmit: () -> Unit = {}): TradeExecutionResult {
         require(apiKey.isNotBlank() && apiSecret.isNotBlank()) { "Clés Bybit manquantes" }
         require(proposal.status == "processing") { "La proposition n'est pas réservée pour exécution" }
         require(proposal.symbol.matches(Regex("^[A-Z0-9]{2,20}USDC$"))) { "Seules les paires Spot */USDC sont autorisées" }
@@ -37,6 +38,8 @@ class BybitTradeClient(
         }
 
         syncServerTime()
+        // Always reconcile before balances/expiry checks: a previous order may already have locked the balance.
+        loadOrderState(proposal.symbol, "", orderLinkId(proposal.id))?.let { return resultFromState(proposal, it) }
         ensureNotExpired(proposal)
         verifySpotTradePermission()
 
@@ -130,6 +133,8 @@ class BybitTradeClient(
         // La règle locale reste > 1 USDC et <= 30 USDC. Les contraintes spécifiques
         // d'une paire sont laissées à l'API Bybit EU, qui reste l'autorité finale.
         var recoveredState: JSONObject? = null
+        ensureNotExpired(proposal)
+        beforeSubmit()
         val created = try {
             signedPost("/v5/order/create", body)
         } catch (createError: Exception) {
@@ -137,6 +142,8 @@ class BybitTradeClient(
             if (recovery.state != null) {
                 recoveredState = recovery.state
                 null
+            } else if (recovery.lookupSucceeded && createError is BybitApiException && createError.code !in setOf(10000L,10002L,10006L,10014L,10016L,110072L,170141L)) {
+                throw createError
             } else if (recovery.lookupSucceeded) {
                 throw BybitExecutionUncertainException("Envoi non confirmé : aucun ordre retrouvé pour le moment. Aucun renvoi automatique.", createError)
             } else {
@@ -191,6 +198,11 @@ class BybitTradeClient(
         syncServerTime()
         val linkId = orderLinkId(proposal.id)
         val state = loadOrderState(proposal.symbol, "", linkId) ?: return null
+        return resultFromState(proposal, state)
+    }
+
+    private fun resultFromState(proposal: TradeProposal, state: JSONObject): TradeExecutionResult {
+        val linkId = orderLinkId(proposal.id)
         return TradeExecutionResult(
             orderId = state.optString("orderId"),
             orderLinkId = state.optString("orderLinkId").ifBlank { linkId },
@@ -301,7 +313,7 @@ class BybitTradeClient(
             if (state != null) {
                 last = state
                 val status = state.optString("orderStatus")
-                if (status.equals("Filled", true) || status.equals("Cancelled", true) || status.equals("Rejected", true)) break
+                if (status in setOf("New", "PartiallyFilled", "Filled", "Cancelled", "Rejected", "PartiallyFilledCanceled")) break
             }
         }
         return last
@@ -312,9 +324,18 @@ class BybitTradeClient(
             val params = linkedMapOf("category" to "spot", "symbol" to symbol, "limit" to "20")
             if (orderId.isNotBlank()) params["orderId"] = orderId else params["orderLinkId"] = orderLinkId
             val root = signedGet(path, params)
-            return root.optJSONObject("result")?.optJSONArray("list")?.optJSONObject(0)
+            val rows = root.optJSONObject("result")?.optJSONArray("list") ?: JSONArray()
+            return (0 until rows.length()).mapNotNull { rows.optJSONObject(it) }.firstOrNull {
+                it.optString("symbol") == symbol && it.optString("orderLinkId") == orderLinkId &&
+                    (orderId.isBlank() || it.optString("orderId") == orderId) && it.optString("orderId").isNotBlank()
+            }
         }
-        return find("/v5/order/realtime") ?: find("/v5/order/history")
+        var lookupError: Exception? = null
+        for (path in listOf("/v5/order/realtime", "/v5/order/history")) {
+            try { find(path)?.let { return it } } catch (error: Exception) { lookupError = error }
+        }
+        lookupError?.let { throw BybitExecutionUncertainException("Lecture Bybit indisponible ; aucun nouvel envoi.", it) }
+        return null
     }
 
     private fun syncServerTime() {
@@ -387,7 +408,7 @@ class BybitTradeClient(
             if (code !in 200..299) throw IllegalStateException("Bybit HTTP $code • ${text.take(300)}")
             val root = JSONObject(text)
             val retCode = root.optLong("retCode", 0L)
-            if (retCode != 0L) throw IllegalStateException("Bybit $retCode • ${root.optString("retMsg").take(250)}")
+            if (retCode != 0L) throw BybitApiException(retCode, "Bybit $retCode • ${root.optString("retMsg").take(250)}")
             root
         } finally {
             if (disconnect) connection.disconnect()

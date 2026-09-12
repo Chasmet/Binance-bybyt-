@@ -15,7 +15,12 @@ data class TradeProposal(
     val source: String,
     val status: String,
     val expiresAt: String?,
-    val createdAt: String?
+    val createdAt: String?,
+    val batchId: String? = null,
+    val batchIndex: Int = 0,
+    val submissionTracking: Boolean = false,
+    val submissionAttempts: Int = 0,
+    val lastSubmissionAt: String? = null
 ) {
     val baseAsset: String
         get() = symbol.uppercase().removeSuffix("USDC")
@@ -34,7 +39,12 @@ data class TradeProposal(
             source = o.optString("source", "chatgpt"),
             status = o.optString("status", "pending"),
             expiresAt = o.optString("expires_at").takeIf { it.isNotBlank() },
-            createdAt = o.optString("created_at").takeIf { it.isNotBlank() }
+            createdAt = o.optString("created_at").takeIf { it.isNotBlank() },
+            batchId = o.optString("batch_id").takeIf { it.isNotBlank() && it != "null" },
+            batchIndex = o.optInt("batch_index", 0),
+            submissionTracking = o.optBoolean("submission_tracking", false),
+            submissionAttempts = o.optInt("submission_attempts", 0),
+            lastSubmissionAt = o.optString("last_submission_at").takeIf { it.isNotBlank() && it != "null" }
         )
     }
 }
