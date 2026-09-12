@@ -264,7 +264,7 @@ class BotRuleStore(context: Context) {
             rsiCondition = if (rule.rsiCondition.lowercase(Locale.US) == "above") "above" else "below",
             rsiThreshold = rule.rsiThreshold.coerceIn(1.0, 99.0),
             action = action,
-            amountUsdc = rule.amountUsdc.coerceIn(1.0, 10.0)
+            amountUsdc = rule.amountUsdc.coerceIn(1.01, 30.0)
         )
     }
 
@@ -307,3 +307,4 @@ class BotRuleStore(context: Context) {
         }
     }
 }
+

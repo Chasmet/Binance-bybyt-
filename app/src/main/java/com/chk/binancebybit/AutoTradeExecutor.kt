@@ -19,41 +19,57 @@ class AutoTradeExecutor(context: Context) {
     private val proposalClient = TradeProposalClient(app, secureStore)
     private val policy = AutoTradePolicyStore(app)
     private val journal = BotRuleStore(app)
-    private val running = AtomicBoolean(false)
+    private val receipts = TradeResultOutbox(app, proposalClient)
 
     fun processEligiblePending(): Summary {
-        if (!policy.enabled()) return Summary(0, 0, 0)
         if (!running.compareAndSet(false, true)) return Summary(0, 0, 0)
         var checked = 0
         var executed = 0
         var failed = 0
         try {
-            val pending = proposalClient.list().pending
-            for (proposal in pending) {
-                val decision = policy.canExecute(proposal)
-                if (!decision.allowed) continue
-                checked++
-                try {
-                    executeOne(proposal)
-                    executed++
-                } catch (e: Exception) {
-                    failed++
-                    journal.addLog(
-                        level = "ERROR",
-                        category = "AUTO_TRADE",
-                        title = "Auto-Trade non exécuté",
-                        detail = "${proposal.side} ${proposal.symbol} • ${e.message ?: e.javaClass.simpleName}",
-                        symbol = proposal.symbol
-                    )
+            receipts.flush()
+            if (!policy.enabled()) return Summary(0, 0, 0)
+            // Only read/reconcile already claimed orders; never submit them again.
+            val first = proposalClient.list()
+            for (proposal in first.processing) {
+                if (receipts.contains(proposal.id)) continue
+                runCatching {
+                    val result = BybitTradeClient(secureStore.get("bybit_api_key"), secureStore.get("bybit_api_secret")).reconcile(proposal)
+                    if (result != null && result.orderId.isNotBlank() && result.orderStatus != "SENT") {
+                        val status = if (result.orderStatus.equals("Rejected", true)) "error" else "executed"
+                        receipts.enqueue(proposal.id, status, result.orderId, result.toJson())
+                        receipts.flush()
+                    }
                 }
             }
+            PendingOrderQueue.drain(
+                first.pending.sortedBy { it.createdAt ?: "" },
+                fetch = { proposalClient.list().pending.sortedBy { it.createdAt ?: "" } },
+                enabled = { policy.enabled() }, id = { it.id },
+                process = { proposal ->
+                    val decision = policy.canExecute(proposal)
+                    if (!decision.allowed) {
+                        runCatching { proposalClient.reportBlocked(proposal.id, decision.reason) }
+                    } else {
+                        checked++
+                        executeOne(proposal)
+                        executed++
+                    }
+                },
+                failed = { proposal, error ->
+                    failed++
+                    journal.addLog(level = "ERROR", category = "AUTO_TRADE", title = "Auto-Trade à vérifier",
+                        detail = "${proposal.id} • ${proposal.symbol} • ${error.message}", symbol = proposal.symbol)
+                }
+            )
+            receipts.flush()
         } finally {
             running.set(false)
         }
         return Summary(checked, executed, failed)
     }
 
-    fun executeOne(original: TradeProposal): TradeExecutionResult {
+    fun executeOne(original: TradeProposal): TradeExecutionResult = synchronized(executionLock) {
         val decision = policy.canExecute(original)
         if (!decision.allowed) throw IllegalStateException(decision.reason)
 
@@ -62,14 +78,18 @@ class AutoTradeExecutor(context: Context) {
         if (key.isBlank() || secret.isBlank()) throw IllegalStateException("Clés Bybit absentes")
 
         val claimed = proposalClient.claim(original.id)
-        return try {
+        // Reserve before the external side effect. An uncertain response keeps the reservation.
+        policy.recordExecuted(claimed)
+        var bybitConfirmed = false
+        try {
             val result = BybitTradeClient(key, secret).execute(claimed)
-            runCatching { proposalClient.markResult(claimed.id, "executed", result.orderId, result.toJson()) }
-            policy.recordExecuted(claimed)
+            bybitConfirmed = true
+            receipts.enqueue(claimed.id, "executed", result.orderId, result.toJson())
+            receipts.flush()
             journal.addLog(
                 level = "AUTO",
                 category = "AUTO_TRADE",
-                title = "Ordre exécuté automatiquement",
+                title = "Ordre placé et vérifié sur Bybit",
                 detail = buildString {
                     append("${claimed.side} ${claimed.symbol} • ${claimed.quoteAmountUsdc} USDC")
                     claimed.limitPrice?.let { append(" • LIMIT $it") }
@@ -99,14 +119,13 @@ class AutoTradeExecutor(context: Context) {
             )
             throw uncertain
         } catch (error: Exception) {
-            runCatching {
-                proposalClient.markResult(
-                    claimed.id,
-                    "error",
-                    null,
-                    JSONObject().put("error", error.message ?: error.toString()).put("autoTrade", true)
-                )
+            if (!bybitConfirmed) {
+                policy.releaseReservation(claimed)
+                receipts.enqueue(claimed.id, "error", "",
+                    JSONObject().put("error", error.message ?: error.toString()).put("autoTrade", true))
+                receipts.flush()
             }
+            // A failed receipt/notification after success must never relabel the real order as failed.
             notify(
                 urgent = true,
                 title = "Auto-Trade • ordre refusé",
@@ -158,6 +177,9 @@ class AutoTradeExecutor(context: Context) {
     data class Summary(val checked: Int, val executed: Int, val failed: Int)
 
     companion object {
+        private val running = AtomicBoolean(false)
+        private val executionLock = Any()
         private const val CHANNEL_ID = "chk_auto_trade"
     }
 }
+

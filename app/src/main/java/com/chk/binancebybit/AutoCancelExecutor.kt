@@ -19,7 +19,7 @@ class AutoCancelExecutor(context: Context) {
     private val cancelClient = CancelProposalClient(app, secureStore)
     private val policy = AutoTradePolicyStore(app)
     private val journal = BotRuleStore(app)
-    private val running = AtomicBoolean(false)
+
 
     fun processEligiblePending(): Summary {
         if (!policy.enabled() || !policy.allowCancelReplace()) return Summary(0, 0, 0)
@@ -162,6 +162,8 @@ class AutoCancelExecutor(context: Context) {
     data class Summary(val checked: Int, val executed: Int, val failed: Int)
 
     companion object {
+        private val running = AtomicBoolean(false)
         private const val CHANNEL_ID = "chk_auto_trade"
     }
 }
+

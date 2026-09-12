@@ -7,6 +7,18 @@ import java.time.LocalDate
 class AutoTradePolicyStore(context: Context) {
     private val prefs = context.applicationContext.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
 
+    init {
+        // Upgrade the former per-order ceiling once; keep smaller custom limits and daily budgets.
+        synchronized(AutoTradePolicyStore::class.java) {
+            if (!prefs.getBoolean("limit_30_migrated", false)) {
+                val edit = prefs.edit().putBoolean("limit_30_migrated", true)
+                if (prefs.getFloat(KEY_MAX_ORDER, 10f) == 10f) edit.putFloat(KEY_MAX_ORDER, 30f)
+                if (prefs.getInt(KEY_MAX_ORDERS, 3) == 3) edit.putInt(KEY_MAX_ORDERS, 5)
+                edit.commit()
+            }
+        }
+    }
+
     fun enabled(): Boolean = prefs.getBoolean(KEY_ENABLED, false)
     fun setEnabled(value: Boolean) {
         val edit = prefs.edit().putBoolean(KEY_ENABLED, value)
@@ -30,13 +42,13 @@ class AutoTradePolicyStore(context: Context) {
     }
     fun cancelReplaceArmedAt(): Long = prefs.getLong(KEY_CANCEL_REPLACE_ARMED_AT, Long.MAX_VALUE)
 
-    fun maxOrderUsdc(): Double = prefs.getFloat(KEY_MAX_ORDER, 10f).toDouble().coerceIn(1.01, 10.0)
-    fun setMaxOrderUsdc(value: Double) = prefs.edit().putFloat(KEY_MAX_ORDER, value.coerceIn(1.01, 10.0).toFloat()).apply()
+    fun maxOrderUsdc(): Double = prefs.getFloat(KEY_MAX_ORDER, 30f).toDouble().coerceIn(1.01, 30.0)
+    fun setMaxOrderUsdc(value: Double) = prefs.edit().putFloat(KEY_MAX_ORDER, value.coerceIn(1.01, 30.0).toFloat()).apply()
 
     fun dailyCapUsdc(): Double = prefs.getFloat(KEY_DAILY_CAP, 30f).toDouble().coerceIn(5.0, 200.0)
     fun setDailyCapUsdc(value: Double) = prefs.edit().putFloat(KEY_DAILY_CAP, value.coerceIn(5.0, 200.0).toFloat()).apply()
 
-    fun maxOrdersPerDay(): Int = prefs.getInt(KEY_MAX_ORDERS, 3).coerceIn(1, 20)
+    fun maxOrdersPerDay(): Int = prefs.getInt(KEY_MAX_ORDERS, 5).coerceIn(1, 20)
     fun setMaxOrdersPerDay(value: Int) = prefs.edit().putInt(KEY_MAX_ORDERS, value.coerceIn(1, 20)).apply()
 
     fun todayNotional(): Double {
@@ -76,7 +88,7 @@ class AutoTradePolicyStore(context: Context) {
             ?: return Decision(false, "Date de proposition absente")
         if (createdAt < armedAt()) return Decision(false, "Proposition antérieure à l'activation Auto-Trade")
         if (proposal.orderType != "LIMIT") return Decision(false, "Auto-Trade limité aux ordres LIMIT")
-        if (proposal.quoteAmountUsdc <= 1.0 || proposal.quoteAmountUsdc > maxOrderUsdc() + 1e-9) {
+        if (!proposal.quoteAmountUsdc.isFinite() || proposal.quoteAmountUsdc <= 1.0 || proposal.quoteAmountUsdc > maxOrderUsdc() + 1e-9) {
             return Decision(false, "Montant hors plafond Auto-Trade")
         }
         val source = proposal.source.lowercase()
@@ -94,15 +106,29 @@ class AutoTradePolicyStore(context: Context) {
 
     fun recordExecuted(proposal: TradeProposal) {
         resetIfNewDay()
+        val ids = prefs.getStringSet("counted_ids", emptySet())!!.toMutableSet()
+        if (!ids.add(proposal.id)) return
         prefs.edit()
+            .putStringSet("counted_ids", ids)
             .putInt(KEY_TODAY_ORDERS, todayOrders() + 1)
             .putFloat(KEY_TODAY_NOTIONAL, (todayNotional() + proposal.quoteAmountUsdc).toFloat())
-            .apply()
+            .commit()
+    }
+
+    fun releaseReservation(proposal: TradeProposal) {
+        resetIfNewDay()
+        val ids = prefs.getStringSet("counted_ids", emptySet())!!.toMutableSet()
+        if (!ids.remove(proposal.id)) return
+        prefs.edit().putStringSet("counted_ids", ids)
+            .putInt(KEY_TODAY_ORDERS, (todayOrders() - 1).coerceAtLeast(0))
+            .putFloat(KEY_TODAY_NOTIONAL, (todayNotional() - proposal.quoteAmountUsdc).coerceAtLeast(0.0).toFloat())
+            .commit()
     }
 
     fun resetDailyCounters() {
         prefs.edit()
             .putString(KEY_DAY, LocalDate.now().toString())
+            .putStringSet("counted_ids", emptySet())
             .putInt(KEY_TODAY_ORDERS, 0)
             .putFloat(KEY_TODAY_NOTIONAL, 0f)
             .apply()
@@ -131,3 +157,4 @@ class AutoTradePolicyStore(context: Context) {
         private const val KEY_TODAY_ORDERS = "today_orders"
     }
 }
+

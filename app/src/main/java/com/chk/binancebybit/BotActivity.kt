@@ -202,7 +202,7 @@ class BotActivity : Activity() {
             actionIndex = (actionIndex + 1) % actions.size
             actionButton.text = actions[actionIndex].second
         }
-        val amount = numberInput("Montant proposition USDC (max 10)").apply { setText("10") }
+        val amount = numberInput("Montant proposition USDC (max 30)").apply { setText("10") }
         val oneShot = CheckBox(this).apply {
             text = "Une seule fois puis désactiver la règle"
             isChecked = true
@@ -449,3 +449,4 @@ class BotActivity : Activity() {
 
     private fun dp(v: Int): Int = (v * resources.displayMetrics.density + 0.5f).toInt()
 }
+
