@@ -7,7 +7,7 @@ L’espace **My Workspace** est déjà confirmé. Conserver le service et ses cl
 1. Appliquer `durable_batch_recovery.sql`, puis `allow_same_pair_batch_orders.sql` (migrations déjà appliquées le 12 septembre ; ne pas les exécuter deux fois).
 2. Exécuter `../tests/submission-guards.sql` : tests synthétiques dans une transaction annulée, sans appel Bybit.
 3. Déployer `chk-mcp-bridge` avec `index.ts` et `batch.ts`, puis `chk-trade-proposals` avec `index.ts`. Les versions déployées sont v4 et v8. Les authentifications personnalisées restent actives.
-4. Déployer le point d’entrée Render existant et les modules MCP 18 depuis la branche `binance-portfolio-app` du dépôt technique. La source testée est `e788e781`.
+4. Déployer le point d’entrée Render existant et les modules MCP 18 depuis la branche `binance-portfolio-app` du dépôt technique. La source testée est `eb8b2e23`.
 5. Vérifier `initialize`, le vrai catalogue `tools/list`, le signal SSE de changement et le suivi d’un ID existant. Aucun ordre valide de test en production.
 6. Publier Android 0.9.10 exclusivement avec le workflow APK d’origine et comparer le certificat à la release précédente.
 

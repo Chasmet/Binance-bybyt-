@@ -23,7 +23,7 @@ Les accusés Android sont conservés localement et renvoyés séparément. Un ac
 
 `OPEN`, `PARTIALLY_FILLED`, `FILLED`, `REJECTED` et `FAILED` sont renvoyés individuellement. Les situations d’attente, d’expiration, d’annulation et de blocage restent explicites. `OPEN` signifie placé, pas rempli. Une lecture Bybit indisponible produit `UNKNOWN`, jamais un succès reconstitué à partir d’un ancien `OPEN`.
 
-Les requêtes ont une attente bornée. `reportReady=false` impose de poursuivre `wait_trade_batch` avec les mêmes IDs ; il ne faut pas demander à l’utilisateur de ressaisir les ordres. Le serveur ne peut pas prolonger indéfiniment un appel ni forcer le comportement d’un client ChatGPT interrompu.
+Les requêtes ont un budget réseau commun : 18 secondes pour création et vérification, sans renouveler ce budget à chaque retry du bridge. Un timeout de transport conserve les identifiants de reprise. `reportReady=false` impose de poursuivre `wait_trade_batch` avec les mêmes IDs ; il ne faut pas demander à l’utilisateur de ressaisir les ordres. Le serveur ne peut pas prolonger indéfiniment un appel ni forcer le comportement d’un client ChatGPT interrompu.
 
 Pour un catalogue client ancien, `create_note` accepte explicitement `kind="TRADE_BATCH"` avec un contenu JSON `{batchId,orders}`, ou `kind="TRADE_BATCH_STATUS"` avec `{proposalIds}`. Ces deux kinds utilisent le traitement des lots et ne créent pas de note. La description indique clairement que TRADE_BATCH peut déclencher Auto-Trade. Les autres notes gardent leur fonctionnement.
 
@@ -37,14 +37,16 @@ Pour un catalogue client ancien, `create_note` accepte explicitement `kind="TRAD
 
 ## Vérification et publication
 
-24 tests Node réussis : catalogue, plafond, split, validation atomique, cinq confirmations, panne de lecture, perte d’accusé, bridge 503 et absence de double création. 12 tests Android réussis : file, reprises, serveur Bybit simulé avec POST accepté puis HTTP 500, curseur, pincement, changement de doigt et ancrage historique. Compilation Android réussie sur GitHub Actions.
+26 tests Node réussis : catalogue, plafond, split, validation atomique, cinq confirmations, panne de lecture, perte d’accusé, bridge 503 et absence de double création. 12 tests Android réussis : file, reprises, serveur Bybit simulé avec POST accepté puis HTTP 500, curseur, pincement, changement de doigt et ancrage historique. Compilation Android réussie sur GitHub Actions.
 
 Le test SQL `server/tests/submission-guards.sql` a été exécuté avec un compte synthétique dans une transaction annulée : plusieurs ordres de même paire, isolation compte/appareil, accès RPC réservé au service, ordre des confirmations, délai de reprise, maximum de tentatives et ancien garde-fou sans batch. Aucun ordre financier ni annulation réelle n’a été créé pour les essais.
 
-Migrations appliquées : `durable_batch_recovery_and_submission_reservations`, `allow_same_pair_batch_orders`. Fonctions Supabase : `chk-mcp-bridge` v4 et `chk-trade-proposals` v8, authentifications existantes conservées. Source Render : `e788e781f5cf9f27c4e51a1f63d4cd3b4ae4ea56`, service existant de My Workspace.
+Migrations appliquées : `durable_batch_recovery_and_submission_reservations`, `allow_same_pair_batch_orders`. Fonctions Supabase : `chk-mcp-bridge` v4 et `chk-trade-proposals` v8, authentifications existantes conservées. Source Render : `eb8b2e239d909400c29b96802cb760b4ad15f9c6`, service existant de My Workspace.
 
 Le contrôle Supabase a également confirmé l’absence de RLS sur `chk_cancel_proposals` et `chk_chart_state`, avec des droits anonymes de lecture et d’écriture. Après vérification des clients Android et des fonctions actives, qui utilisent les accès serveur authentifiés, la migration `protect_cancel_and_chart_tables` a activé RLS sur les deux tables. Le rôle anonyme ne voit plus aucune ligne ; le service conserve son accès. Aucun accès public n’a été ajouté. [Référence du contrôle Supabase](https://supabase.com/docs/guides/database/database-linter?lint=0013_rls_disabled_in_public).
 
 Le code de mise à jour, le workflow APK d’origine et le proxy de signature ont été comparés aux sources initiales et sont identiques. La publication utilise toujours la signature stable existante. Aucun test tactile sur le téléphone réel, de suspension Android/Doze ou de cycle financier complet en production n’a été effectué.
 
 Références : [recherche des ordres Bybit](https://bybit-exchange.github.io/docs/v5/order/order-list), [catalogue d’outils MCP](https://modelcontextprotocol.io/specification/2025-06-18/server/tools), [transport MCP](https://modelcontextprotocol.io/specification/2025-06-18/basic/transports).
+
+Vérification via le connecteur existant après déploiement : catalogue annoncé 18.0.0, plafond 30, lecture des annulations réussie après activation de RLS, reprise TRADE_BATCH_STATUS d’un ordre existant avec recherche Bybit et résultat OPEN confirmé. Un TRADE_BATCH volontairement invalide a été rejeté avant insertion. Aucun nouvel ordre n’a été envoyé.
