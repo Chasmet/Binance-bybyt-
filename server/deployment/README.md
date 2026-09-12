@@ -1,6 +1,6 @@
 # Raccordement au serveur existant
 
-Ces sources sont préparées, pas encore déployées.
+Les fonctions Supabase et la contrainte SQL ont été déployées le 12 septembre 2026. Le module MCP est raccordé au serveur existant (commit 2561e17c). La liste ci-dessous décrit la procédure et les vérifications de publication.
 
 1. Confirmer l’espace Render puis identifier le service `chk-binance-workspace-mcp` et récupérer son code réel. Sauvegarder sa branche/source avant modification. Ne pas toucher à `/ci/android-signing` ni aux anciennes routes.
 2. Vérifier les plafonds serveur qui ne figurent pas dans le dépôt Android. Les porter à 30 USDC pour les propositions bot/MCP.

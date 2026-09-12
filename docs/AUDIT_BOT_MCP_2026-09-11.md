@@ -54,3 +54,13 @@ Tests serveur hors marché réel : plafond 30, rejet 30.01, valeurs invalides, c
 Tests Kotlin de la file : cinq éléments dont arrivées pendant traitement, poursuite après erreur, absence de double traitement dans un passage, désactivation avant l’ordre suivant. Compilation et tests à contrôler sur GitHub Actions avant publication.
 
 Aucun ordre réel ni annulation réelle n’a été créé pour les essais.
+
+## Raccordement du 12 septembre 2026
+
+Espace Render confirmé par l’utilisateur : My Workspace. Service existant identifié : `chk-binance-workspace-mcp`, dépôt technique `Chasmet/APK-Installer-Web-CHK`, branche `binance-portfolio-app`, commit de raccordement `2561e17c0f8fd263a089bc2b360b377ed63e375f`. Le point d’entrée existant `server-v16.mjs` charge un module isolé `trading-extension.mjs` ; aucune nouvelle couche de proxy ni nouveau service n’a été créé.
+
+Le catalogue MCP expose les deux outils de lot et le plafond de 30 USDC. L’ancien outil `create_trade_proposal` attend aussi une vérification ; si la lecture échoue, il conserve l’ID de la proposition dans son résultat. L’identité du compte est imposée par le serveur et ne peut pas être remplacée par les arguments du connecteur. Le proxy de signature est identique octet pour octet.
+
+Contrainte SQL 30 USDC appliquée et relue. Fonctions actives déployées : `chk-trade-proposals` v7, `chk-bot-proposals` v2, `chk-cancel-proposals` v4, `chk-mcp-bridge` v3. Sauvegardes des sources et branches antérieures conservées. Le budget quotidien et les autorisations de l’APK restent distincts.
+
+Validation : 10 tests du lot et 5 tests du raccordement passent sans marché réel. Les 4 tests Kotlin et la compilation Android de la PR réussissent. La publication signée reste réalisée exclusivement par le workflow APK d’origine. Les observations « raccordement requis » ci-dessus décrivent l’étape initiale de l’audit et sont remplacées par ce compte rendu.
