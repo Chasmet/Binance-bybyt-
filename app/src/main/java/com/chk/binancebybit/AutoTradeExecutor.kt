@@ -12,6 +12,7 @@ import android.os.Build
 import org.json.JSONObject
 import java.util.concurrent.atomic.AtomicBoolean
 import kotlin.math.abs
+import java.time.Instant
 
 class AutoTradeExecutor(context: Context) {
     private val app = context.applicationContext
@@ -28,20 +29,13 @@ class AutoTradeExecutor(context: Context) {
         var failed = 0
         try {
             receipts.flush()
-            if (!policy.enabled()) return Summary(0, 0, 0)
-            // Only read/reconcile already claimed orders; never submit them again.
             val first = proposalClient.list()
+            // Read-only reconciliation remains useful when Auto-Trade has been disabled.
             for (proposal in first.processing) {
                 if (receipts.contains(proposal.id)) continue
-                runCatching {
-                    val result = BybitTradeClient(secureStore.get("bybit_api_key"), secureStore.get("bybit_api_secret")).reconcile(proposal)
-                    if (result != null && result.orderId.isNotBlank() && result.orderStatus != "SENT") {
-                        val status = if (result.orderStatus.equals("Rejected", true)) "error" else "executed"
-                        receipts.enqueue(proposal.id, status, result.orderId, result.toJson())
-                        receipts.flush()
-                    }
-                }
+                runCatching { recoverOne(proposal) }
             }
+            if (!policy.enabled()) return Summary(0, 0, 0)
             PendingOrderQueue.drain(
                 first.pending.sortedBy { it.createdAt ?: "" },
                 fetch = { proposalClient.list().pending.sortedBy { it.createdAt ?: "" } },
@@ -69,6 +63,27 @@ class AutoTradeExecutor(context: Context) {
         return Summary(checked, executed, failed)
     }
 
+    private fun recoverOne(proposal: TradeProposal) = synchronized(executionLock) {
+        val trader = BybitTradeClient(secureStore.get("bybit_api_key"), secureStore.get("bybit_api_secret"))
+        var result = trader.reconcile(proposal) // Both realtime and history must succeed before a retry.
+        if (result == null) {
+            fun millis(raw: String?) = raw?.let { runCatching { Instant.parse(it).toEpochMilli() }.getOrNull() }
+            val eligible = SubmissionRetryPolicy.allowed(proposal.submissionTracking, proposal.submissionAttempts,
+                millis(proposal.lastSubmissionAt), millis(proposal.expiresAt), System.currentTimeMillis())
+            if (!eligible || !policy.canExecute(proposal, reserved = true).allowed) return@synchronized
+            policy.recordExecuted(proposal)
+            result = trader.execute(proposal) {
+                check(policy.canExecute(proposal, reserved = true).allowed) { "Autorisation Auto-Trade retirée" }
+                proposalClient.prepareSubmission(proposal.id)
+            }
+        }
+        if (result.orderId.isNotBlank() && result.orderStatus in setOf("New", "PartiallyFilled", "Filled", "Rejected", "Cancelled", "PartiallyFilledCanceled")) {
+            val status = if (result.orderStatus == "Rejected") "error" else "executed"
+            receipts.enqueue(proposal.id, status, result.orderId, result.toJson())
+            receipts.flush(proposal.id)
+        }
+    }
+
     fun executeOne(original: TradeProposal): TradeExecutionResult = synchronized(executionLock) {
         val decision = policy.canExecute(original)
         if (!decision.allowed) throw IllegalStateException(decision.reason)
@@ -77,15 +92,19 @@ class AutoTradeExecutor(context: Context) {
         val secret = secureStore.get("bybit_api_secret")
         if (key.isBlank() || secret.isBlank()) throw IllegalStateException("Clés Bybit absentes")
 
-        val claimed = proposalClient.claim(original.id)
+        val claimed = proposalClient.claim(original.id, tracked = true)
         // Reserve before the external side effect. An uncertain response keeps the reservation.
         policy.recordExecuted(claimed)
         var bybitConfirmed = false
         try {
-            val result = BybitTradeClient(key, secret).execute(claimed)
+            val result = BybitTradeClient(key, secret).execute(claimed) {
+                check(policy.canExecute(claimed, reserved = true).allowed) { "Autorisation Auto-Trade retirée" }
+                proposalClient.prepareSubmission(claimed.id)
+            }
             bybitConfirmed = true
-            receipts.enqueue(claimed.id, "executed", result.orderId, result.toJson())
-            receipts.flush()
+            receipts.enqueue(claimed.id, if (result.orderStatus == "Rejected") "error" else "executed", result.orderId, result.toJson())
+            if (result.orderStatus == "Rejected") policy.releaseReservation(claimed)
+            receipts.flush(claimed.id)
             journal.addLog(
                 level = "AUTO",
                 category = "AUTO_TRADE",
@@ -182,4 +201,5 @@ class AutoTradeExecutor(context: Context) {
         private const val CHANNEL_ID = "chk_auto_trade"
     }
 }
+
 

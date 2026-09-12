@@ -35,8 +35,8 @@ android {
         applicationId = "com.chk.binancebybit"
         minSdk = 26
         targetSdk = 35
-        versionCode = 34
-        versionName = "0.9.9"
+        versionCode = 35
+        versionName = "0.9.10"
     }
 
     signingConfigs {
@@ -65,10 +65,12 @@ android {
     kotlinOptions {
         jvmTarget = "17"
     }
+    testOptions { unitTests.isIncludeAndroidResources = true }
 }
 
 dependencies {
     testImplementation("junit:junit:4.13.2")
+    testImplementation("org.robolectric:robolectric:4.16")
     implementation("com.squareup.okhttp3:okhttp:4.12.0")
 }
 

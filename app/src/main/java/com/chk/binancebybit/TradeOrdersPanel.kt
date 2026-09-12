@@ -192,9 +192,9 @@ class TradeOrdersPanel(
         button.text = "VÉRIFICATION…"
         runAsync(
             task = {
-                val claimed = proposalClient.claim(original.id)
+                val claimed = proposalClient.claim(original.id, tracked = true)
                 try {
-                    val result = BybitTradeClient(key, secret).execute(claimed)
+                    val result = BybitTradeClient(key, secret).execute(claimed) { proposalClient.prepareSubmission(claimed.id) }
                     val syncWarning = runCatching {
                         proposalClient.markResult(claimed.id, "executed", result.orderId, result.toJson())
                     }.exceptionOrNull()?.message
@@ -483,4 +483,5 @@ class TradeOrdersPanel(
         }.start()
     }
 }
+
 

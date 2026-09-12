@@ -76,10 +76,11 @@ class TradeProposalClient(
      * Réserve atomiquement une proposition avant tout appel réel à Bybit.
      * Le serveur n'accepte le claim que si elle est encore pending et non expirée.
      */
-    fun claim(proposalId: String): TradeProposal {
+    fun claim(proposalId: String, tracked: Boolean = false): TradeProposal {
         val identity = workspaceSync.ensureIdentity()
         val root = JSONObject(postJson(JSONObject().apply {
             put("action", "claim")
+            put("clientProtocol", if (tracked) 2 else 1)
             put("deviceId", identity.deviceId)
             put("deviceSecret", identity.deviceSecret)
             put("id", proposalId)
@@ -114,6 +115,12 @@ class TradeProposalClient(
             .put("id", proposalId).put("reason", reason))
     }
 
+    fun prepareSubmission(proposalId: String) {
+        val identity = workspaceSync.ensureIdentity()
+        postJson(JSONObject().put("action", "prepare_submission")
+            .put("deviceId", identity.deviceId).put("deviceSecret", identity.deviceSecret).put("id", proposalId))
+    }
+
     fun deleteHistory(proposalId: String): String {
         val identity = workspaceSync.ensureIdentity()
         return postJson(JSONObject().apply {
@@ -128,8 +135,8 @@ class TradeProposalClient(
         val connection = (URL(endpoint).openConnection() as HttpURLConnection).apply {
             requestMethod = "POST"
             doOutput = true
-            connectTimeout = 10_000
-            readTimeout = 20_000
+            connectTimeout = 4_000
+            readTimeout = 8_000
             setRequestProperty("Content-Type", "application/json")
             setRequestProperty("Accept", "application/json")
         }
@@ -158,4 +165,3 @@ class TradeProposalClient(
         const val BOT_ENDPOINT = "https://gflnvlolwqnvzxyqsrir.supabase.co/functions/v1/chk-bot-proposals"
     }
 }
-
