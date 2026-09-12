@@ -43,6 +43,8 @@ Le test SQL `server/tests/submission-guards.sql` a été exécuté avec un compt
 
 Migrations appliquées : `durable_batch_recovery_and_submission_reservations`, `allow_same_pair_batch_orders`. Fonctions Supabase : `chk-mcp-bridge` v4 et `chk-trade-proposals` v8, authentifications existantes conservées. Source Render : `e788e781f5cf9f27c4e51a1f63d4cd3b4ae4ea56`, service existant de My Workspace.
 
+Le contrôle Supabase a également confirmé l’absence de RLS sur `chk_cancel_proposals` et `chk_chart_state`, avec des droits anonymes de lecture et d’écriture. Après vérification des clients Android et des fonctions actives, qui utilisent les accès serveur authentifiés, la migration `protect_cancel_and_chart_tables` a activé RLS sur les deux tables. Le rôle anonyme ne voit plus aucune ligne ; le service conserve son accès. Aucun accès public n’a été ajouté. [Référence du contrôle Supabase](https://supabase.com/docs/guides/database/database-linter?lint=0013_rls_disabled_in_public).
+
 Le code de mise à jour, le workflow APK d’origine et le proxy de signature ont été comparés aux sources initiales et sont identiques. La publication utilise toujours la signature stable existante. Aucun test tactile sur le téléphone réel, de suspension Android/Doze ou de cycle financier complet en production n’a été effectué.
 
 Références : [recherche des ordres Bybit](https://bybit-exchange.github.io/docs/v5/order/order-list), [catalogue d’outils MCP](https://modelcontextprotocol.io/specification/2025-06-18/server/tools), [transport MCP](https://modelcontextprotocol.io/specification/2025-06-18/basic/transports).
