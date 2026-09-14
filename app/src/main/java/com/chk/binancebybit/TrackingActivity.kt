@@ -54,7 +54,7 @@ class TrackingActivity : Activity() {
         super.onCreate(savedInstanceState)
         store = TrackingStore(this)
         store.setEnabled(true)
-        runCatching { MarketWatchService.start(this) }
+        runCatching { TrackingService.start(this) }
         window.statusBarColor = bg
         window.navigationBarColor = bg
         setContentView(buildRoot())
@@ -184,7 +184,7 @@ class TrackingActivity : Activity() {
         })
         settings.addView(secondary(if (store.enabled()) "Arrêter le Tracking" else "Démarrer le Tracking") {
             store.setEnabled(!store.enabled())
-            if (store.enabled()) MarketWatchService.start(this)
+            if (store.enabled()) TrackingService.start(this) else TrackingService.stop(this)
             Toast.makeText(this, if (store.enabled()) "Tracking activé" else "Tracking désactivé", Toast.LENGTH_SHORT).show()
             render()
         })
