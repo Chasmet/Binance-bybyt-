@@ -111,7 +111,7 @@ class WallTrackerEngine(context: Context) : TrackingMarketListener {
         asks: List<TrackingBookLevel>,
         timestamp: Long
     ) {
-        val asset = if (exchange == "BINANCE") reverseBinance[symbol] else reverseBybit[symbol] ?: return
+        val asset = (if (exchange == "BINANCE") reverseBinance[symbol] else reverseBybit[symbol]) ?: return
         if (asset !in heldAssets) return
         synchronized(lock) {
             processSide(asset, exchange, symbol, "BUY", bids, timestamp)
