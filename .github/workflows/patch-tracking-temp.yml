@@ -11,22 +11,29 @@ jobs:
       - uses: actions/checkout@v4
         with:
           ref: feature/tracking-v010
-      - name: Patch WallTrackerEngine nullable asset
+      - name: Finalize Tracking wiring
         run: |
           python - <<'PY'
           from pathlib import Path
+
           p=Path('app/src/main/java/com/chk/binancebybit/WallTrackerEngine.kt')
           s=p.read_text()
           old='val asset = if (exchange == "BINANCE") reverseBinance[symbol] else reverseBybit[symbol] ?: return'
           new='val asset = (if (exchange == "BINANCE") reverseBinance[symbol] else reverseBybit[symbol]) ?: return'
-          if old not in s:
-              print('Already patched')
-          else:
+          if old in s:
               p.write_text(s.replace(old,new))
+
+          p=Path('app/src/main/java/com/chk/binancebybit/TrackingActivity.kt')
+          s=p.read_text()
+          s=s.replace('runCatching { MarketWatchService.start(this) }','runCatching { TrackingService.start(this) }')
+          old='''            store.setEnabled(!store.enabled())\n            if (store.enabled()) MarketWatchService.start(this)\n            Toast.makeText(this, if (store.enabled()) "Tracking activé" else "Tracking désactivé", Toast.LENGTH_SHORT).show()'''
+          new='''            store.setEnabled(!store.enabled())\n            if (store.enabled()) TrackingService.start(this) else TrackingService.stop(this)\n            Toast.makeText(this, if (store.enabled()) "Tracking activé" else "Tracking désactivé", Toast.LENGTH_SHORT).show()'''
+          s=s.replace(old,new)
+          p.write_text(s)
           PY
           if git diff --quiet; then exit 0; fi
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add app/src/main/java/com/chk/binancebybit/WallTrackerEngine.kt
-          git commit -m "fix(tracking): resolve held asset before processing orderbook"
+          git add app/src/main/java/com/chk/binancebybit/WallTrackerEngine.kt app/src/main/java/com/chk/binancebybit/TrackingActivity.kt
+          git commit -m "fix(tracking): finalize dedicated background service wiring"
           git push origin HEAD:feature/tracking-v010
