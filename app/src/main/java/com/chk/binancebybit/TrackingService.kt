@@ -10,6 +10,7 @@ import android.content.Intent
 import android.os.Build
 import android.os.IBinder
 import android.os.PowerManager
+import java.util.concurrent.atomic.AtomicBoolean
 
 /**
  * Dedicated on-device foreground service for continuous Wall Tracking.
@@ -17,8 +18,10 @@ import android.os.PowerManager
  * has Tracking enabled so the two public WebSockets can continue with the screen off.
  */
 class TrackingService : Service() {
-    private var engine: WallTrackerEngine? = null
+    @Volatile private var engine: WallTrackerEngine? = null
     private var wakeLock: PowerManager.WakeLock? = null
+    private val destroyed = AtomicBoolean(false)
+    private val starting = AtomicBoolean(false)
 
     override fun onCreate() {
         super.onCreate()
@@ -39,11 +42,24 @@ class TrackingService : Service() {
                 acquire()
             }
         }
-        if (engine == null) engine = WallTrackerEngine(this).also { it.start() }
+        if (engine == null && starting.compareAndSet(false, true)) {
+            Thread {
+                try {
+                    if (destroyed.get() || !TrackingStore(applicationContext).enabled()) return@Thread
+                    val created = WallTrackerEngine(applicationContext)
+                    if (destroyed.get()) return@Thread
+                    engine = created
+                    created.start()
+                } finally {
+                    starting.set(false)
+                }
+            }.apply { name = "CHK-Tracking-Start"; isDaemon = true; start() }
+        }
         return START_STICKY
     }
 
     override fun onDestroy() {
+        destroyed.set(true)
         engine?.stop()
         engine = null
         wakeLock?.let { if (it.isHeld) it.release() }
