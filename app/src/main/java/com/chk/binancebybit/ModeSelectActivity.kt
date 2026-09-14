@@ -31,7 +31,7 @@ class ModeSelectActivity : Activity() {
         window.statusBarColor = bg
         window.navigationBarColor = bg
         requestNotifications()
-        if (TrackingStore(this).enabled()) runCatching { MarketWatchService.start(this) }
+        if (TrackingStore(this).enabled()) runCatching { TrackingService.start(this) }
         setContentView(buildUi())
     }
 
@@ -84,7 +84,7 @@ class ModeSelectActivity : Activity() {
             buttonText = "Ouvrir Tracking"
         ) {
             TrackingStore(this).setEnabled(true)
-            MarketWatchService.start(this)
+            TrackingService.start(this)
             startActivity(Intent(this, TrackingActivity::class.java))
         })
 
