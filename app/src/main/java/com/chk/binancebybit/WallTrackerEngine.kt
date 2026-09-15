@@ -1,8 +1,10 @@
 package com.chk.binancebybit
 
 import android.content.Context
+import android.os.PowerManager
 import org.json.JSONArray
 import org.json.JSONObject
+import java.time.Instant
 import java.util.Locale
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.atomic.AtomicBoolean
@@ -13,45 +15,64 @@ import kotlin.math.min
 /**
  * On-device Wall Tracker / Wall Fingerprint engine.
  *
- * Heavy market data never goes through Render or Supabase. Binance/Bybit public WebSockets feed
- * this engine directly; only compact derived state is relayed for MCP access.
+ * Raw Binance/Bybit market streams stay on this phone. The engine processes aggregated WebSocket
+ * events, persists only useful wall history and sends only compact derived state to the MCP relay.
  */
 class WallTrackerEngine(context: Context) : TrackingMarketListener {
     private val app = context.applicationContext
     private val store = TrackingStore(app)
     private val resolver = TrackingPairResolver(app)
     private val remote = TrackingRemoteClient(app)
+    private val notifier = TrackingWallNotifier(app)
+    private val secureStore = SecureStore(app)
+    private val proposalClient by lazy { TradeProposalClient(app, secureStore) }
     private val runtime = app.getSharedPreferences("chk_tracking_runtime", Context.MODE_PRIVATE)
+    private val powerManager = app.getSystemService(Context.POWER_SERVICE) as PowerManager
     private val running = AtomicBoolean(false)
     private val lock = Any()
 
+    @Volatile private var profile = store.powerProfile()
     private var sockets: TrackingSocketManager? = null
     private var worker: Thread? = null
     private var heldAssets: Set<String> = emptySet()
-    private var binancePairs: Map<String, String> = emptyMap() // asset -> pair
+    private var priorityAssets: Set<String> = emptySet()
+    private var openOrderAssets: Set<String> = emptySet()
+    private var binancePairs: Map<String, String> = emptyMap()
     private var bybitPairs: Map<String, String> = emptyMap()
-    private var reverseBinance: Map<String, String> = emptyMap() // pair -> asset
+    private var reverseBinance: Map<String, String> = emptyMap()
     private var reverseBybit: Map<String, String> = emptyMap()
     private val connections = ConcurrentHashMap<String, Boolean>()
     private val connectionDetails = ConcurrentHashMap<String, String>()
-    private val prices = ConcurrentHashMap<String, Double>()
+    private val connectionChangedAt = ConcurrentHashMap<String, Long>()
+    private val freshness = ConcurrentHashMap<String, Long>()
+    private val quotes = ConcurrentHashMap<String, TrackingQuote>()
+    private val books = ConcurrentHashMap<String, BookSnapshot>()
     private val active = linkedMapOf<String, MutableWall>()
     private val matchCooldown = HashMap<String, Long>()
+    @Volatile private var chkOrders: List<ChkOrderZone> = emptyList()
     @Volatile private var dirty = true
     @Volatile private var forceRefreshAssets = false
     private var lastRemotePullAt = 0L
     private var lastRemotePushAt = 0L
     private var lastAssetRefreshAt = 0L
+    private var lastOrderRefreshAt = 0L
     private var lastCleanupAt = 0L
+    private var lastRuntimeFreshWrite = 0L
     private var seq = 0
 
     fun start() {
         if (!running.compareAndSet(false, true)) return
-        runtime.edit().putBoolean("engine_running", true).putLong("engine_started_at", System.currentTimeMillis()).apply()
+        profile = store.powerProfile()
+        runtime.edit()
+            .putBoolean("engine_running", true)
+            .putString("power_mode", profile.mode.name)
+            .putLong("engine_started_at", System.currentTimeMillis())
+            .apply()
         synchronized(lock) {
             active.clear()
-            store.activeWalls(150).forEach { active[it.id] = MutableWall.from(it) }
+            store.activeWalls(180).forEach { active[it.id] = MutableWall.from(it) }
         }
+        runCatching { refreshChkOrders(true) }
         refreshAssets(true)
         worker = Thread { maintenanceLoop() }.apply {
             name = "CHK-WallTracker"
@@ -67,27 +88,37 @@ class WallTrackerEngine(context: Context) : TrackingMarketListener {
         runtime.edit().putBoolean("engine_running", false).apply()
     }
 
-    fun trackedAssetCount(): Int = heldAssets.size
+    fun trackedAssetCount(): Int = priorityAssets.size
     fun isTrackingEnabled(): Boolean = store.enabled()
 
     override fun onConnection(exchange: String, connected: Boolean, detail: String) {
         connections[exchange] = connected
-        connectionDetails[exchange] = detail.take(160)
-        runtime.edit()
-            .putBoolean("${exchange.lowercase(Locale.US)}_connected", connected)
-            .putString("${exchange.lowercase(Locale.US)}_detail", detail.take(160))
-            .putLong("connection_updated_at", System.currentTimeMillis())
-            .apply()
+        connectionDetails[exchange] = detail.take(180)
+        connectionChangedAt[exchange] = System.currentTimeMillis()
+        if (!connected) {
+            runtime.edit().putBoolean("${exchange.lowercase(Locale.US)}_connected", false).apply()
+        }
         updateGapState()
         dirty = true
     }
 
+    override fun onQuote(exchange: String, symbol: String, quote: TrackingQuote) {
+        if (quote.lastPrice <= 0.0 && quote.bid <= 0.0 && quote.ask <= 0.0) return
+        quotes["$exchange:$symbol"] = quote
+        markFresh(exchange, "quote", quote.timestamp)
+        maybeWriteRuntimeFresh(exchange, quote)
+        dirty = true
+    }
+
     override fun onTicker(exchange: String, symbol: String, lastPrice: Double, timestamp: Long) {
-        if (lastPrice > 0.0) prices["$exchange:$symbol"] = lastPrice
+        if (lastPrice > 0.0) markFresh(exchange, "ticker", timestamp)
     }
 
     override fun onTrade(exchange: String, symbol: String, price: Double, quantity: Double, side: String, timestamp: Long) {
         if (price <= 0.0 || quantity <= 0.0) return
+        markFresh(exchange, "trade", timestamp)
+        val interactive = powerManager.isInteractive
+        val tradePersist = if (interactive) profile.tradePersistOnMs else profile.tradePersistOffMs
         synchronized(lock) {
             val candidates = active.values.filter {
                 it.status == "ACTIVE" && it.exchange == exchange && it.symbol == symbol &&
@@ -96,9 +127,12 @@ class WallTrackerEngine(context: Context) : TrackingMarketListener {
             }
             candidates.forEach { w ->
                 w.executed += quantity
+                w.pendingTradeQty += quantity
+                w.pendingTradeNotional += price * quantity
                 w.lastSeen = max(w.lastSeen, timestamp)
-                store.wallTrade(w.snapshot(), price, quantity, timestamp)
-                if (System.currentTimeMillis() - w.lastPersistAt >= 2_000L) persist(w, "TRADE")
+                if (System.currentTimeMillis() - w.lastTradePersistAt >= tradePersist) {
+                    flushTradeSample(w, timestamp)
+                }
             }
         }
         dirty = true
@@ -111,8 +145,11 @@ class WallTrackerEngine(context: Context) : TrackingMarketListener {
         asks: List<TrackingBookLevel>,
         timestamp: Long
     ) {
+        if (bids.isEmpty() && asks.isEmpty()) return
         val asset = (if (exchange == "BINANCE") reverseBinance[symbol] else reverseBybit[symbol]) ?: return
-        if (asset !in heldAssets) return
+        if (asset !in priorityAssets) return
+        books["$exchange:$symbol"] = BookSnapshot(bids.take(12), asks.take(12), timestamp)
+        markFresh(exchange, "book", timestamp)
         synchronized(lock) {
             processSide(asset, exchange, symbol, "BUY", bids, timestamp)
             processSide(asset, exchange, symbol, "SELL", asks, timestamp)
@@ -122,7 +159,7 @@ class WallTrackerEngine(context: Context) : TrackingMarketListener {
 
     private fun processSide(asset: String, exchange: String, symbol: String, side: String, levels: List<TrackingBookLevel>, at: Long) {
         if (levels.isEmpty()) return
-        val quantities = levels.map { it.quantity }.filter { it > 0.0 }.sorted()
+        val quantities = levels.asSequence().map { it.quantity }.filter { it > 0.0 }.sorted().toList()
         if (quantities.isEmpty()) return
         val median = if (quantities.size % 2 == 1) quantities[quantities.size / 2]
         else (quantities[quantities.size / 2 - 1] + quantities[quantities.size / 2]) / 2.0
@@ -177,21 +214,31 @@ class WallTrackerEngine(context: Context) : TrackingMarketListener {
             val c = candidates[i]
             if (active.values.any { it.status == "ACTIVE" && it.exchange == exchange && it.symbol == symbol && it.side == side && nearPrice(it.price, c.price) }) continue
             val id = createWallId(asset, exchange, at)
+            val fingerprint = findFingerprint(asset, exchange, side, c, at)
             val wall = MutableWall(
                 id = id, asset = asset, exchange = exchange, symbol = symbol, side = side,
                 firstSeen = at, lastSeen = at, initialPrice = c.price, price = c.price,
                 initialQty = c.quantity, qty = c.quantity, executed = 0.0, accountedExecution = 0.0,
                 cancelled = 0.0, strength = c.strength, moves = 0, replenishments = 0,
-                status = "ACTIVE", lastEvent = "APPEARED", lastPersistAt = 0L
+                status = "ACTIVE", lastEvent = if (fingerprint != null) "REAPPEARED" else "APPEARED", lastPersistAt = 0L,
+                fingerprintId = fingerprint?.fingerprintId ?: id,
+                fingerprintConfidence = fingerprint?.score ?: 0,
+                reappearances = fingerprint?.reappearances ?: 0
             )
             active[id] = wall
-            persist(wall, "APPEARED", "Mur détecté • ${formatStrength(c.strength)}× la quantité médiane")
+            if (fingerprint != null) {
+                persist(wall, "REAPPEARED", "Fingerprint ${fingerprint.score}% • probablement le même mur que ${fingerprint.previousId}")
+            } else {
+                persist(wall, "APPEARED", "Mur détecté • ${formatStrength(c.strength)}× la quantité médiane")
+            }
             checkCrossExchange(wall, at)
         }
     }
 
     private fun updateExisting(w: MutableWall, price: Double, quantity: Double, strength: Double, at: Long) {
         val previous = w.qty
+        var meaningful: String? = null
+        var detail = ""
         if (quantity < previous) {
             val reduction = previous - quantity
             val executionAvailable = max(0.0, w.executed - w.accountedExecution)
@@ -200,7 +247,9 @@ class WallTrackerEngine(context: Context) : TrackingMarketListener {
             val cancelled = max(0.0, reduction - absorbed)
             w.cancelled += cancelled
             if (reduction >= max(w.initialQty * 0.10, 1e-9)) {
-                w.lastEvent = if (absorbed >= reduction * 0.65) "ABSORBING" else if (cancelled >= reduction * 0.65) "REDUCED" else "MIXED_REDUCTION"
+                meaningful = if (absorbed >= reduction * 0.65) "ABSORBING" else if (cancelled >= reduction * 0.65) "REDUCED" else "MIXED_REDUCTION"
+                w.lastEvent = meaningful
+                detail = "Δ-${fmt(reduction)} • exécuté estimé ${fmt(absorbed)} • annulé estimé ${fmt(cancelled)}"
             }
         } else if (quantity > previous) {
             val increase = quantity - previous
@@ -217,7 +266,9 @@ class WallTrackerEngine(context: Context) : TrackingMarketListener {
         w.price = price
         w.strength = strength
         w.lastSeen = at
-        if (System.currentTimeMillis() - w.lastPersistAt >= 3_000L) persist(w, w.lastEvent)
+        val interval = if (powerManager.isInteractive) profile.activePersistOnMs else profile.activePersistOffMs
+        if (meaningful != null) persist(w, meaningful, detail)
+        else if (System.currentTimeMillis() - w.lastPersistAt >= interval) persist(w, "TRACK")
     }
 
     private fun moveWall(w: MutableWall, c: Candidate, at: Long) {
@@ -233,6 +284,7 @@ class WallTrackerEngine(context: Context) : TrackingMarketListener {
     }
 
     private fun closeWall(w: MutableWall, at: Long) {
+        flushTradeSample(w, at)
         val reduction = max(0.0, w.qty)
         val executionAvailable = max(0.0, w.executed - w.accountedExecution)
         val absorbed = min(reduction, executionAvailable)
@@ -248,17 +300,59 @@ class WallTrackerEngine(context: Context) : TrackingMarketListener {
         w.lastSeen = at
         w.status = status
         w.lastEvent = status
-        persist(w, status, "Exécuté estimé ${fmt(w.executed)} • annulé estimé ${fmt(w.cancelled)}")
+        persist(w, status, "Durée ${durationText(at - w.firstSeen)} • exécuté estimé ${fmt(w.executed)} • annulé estimé ${fmt(w.cancelled)}")
+    }
+
+    private fun flushTradeSample(w: MutableWall, at: Long) {
+        if (w.pendingTradeQty <= 0.0) return
+        val avg = if (w.pendingTradeQty > 0.0) w.pendingTradeNotional / w.pendingTradeQty else w.price
+        store.wallTrade(w.snapshot(), avg, w.pendingTradeQty, at)
+        w.pendingTradeQty = 0.0
+        w.pendingTradeNotional = 0.0
+        w.lastTradePersistAt = System.currentTimeMillis()
     }
 
     private fun persist(w: MutableWall, event: String, detail: String = "") {
         val snap = w.snapshot()
         store.upsertWall(snap)
-        if (event in setOf("APPEARED", "MOVED", "REPLENISHED", "ABSORBED", "CANCELLED", "DISAPPEARED")) {
-            store.wallEvent(snap, event, detail)
+        if (event in WALL_HISTORY_EVENTS) store.wallEvent(snap, event, detail)
+        if (event in ALERT_EVENTS) notifier.maybeNotify(snap, event, detail, store.minWallNotional(), store.minWallStrength())
+        if (!w.spoofAlerted && snap.spoofingProbability >= 75) {
+            w.spoofAlerted = true
+            val warning = "Spoofing probable ${snap.spoofingProbability}% • signal comportemental, aucune attribution institutionnelle"
+            store.wallEvent(snap, "SPOOFING_PROBABLE", warning)
+            notifier.maybeNotify(snap, "SPOOFING_PROBABLE", warning, store.minWallNotional(), store.minWallStrength())
         }
         w.lastPersistAt = System.currentTimeMillis()
         dirty = true
+    }
+
+    private fun findFingerprint(asset: String, exchange: String, side: String, c: Candidate, at: Long): FingerprintMatch? {
+        val recent = store.recentClosedWalls(asset, exchange, side, at - 15 * 60_000L, 24)
+        var best: FingerprintMatch? = null
+        for (old in recent) {
+            val priceDistance = abs(old.currentPrice - c.price) / max(old.currentPrice, c.price)
+            if (priceDistance > 0.035) continue
+            val priceScore = (1.0 - min(1.0, priceDistance / 0.035)).coerceIn(0.0, 1.0)
+            val qtyScore = similarity(max(old.initialQty, old.currentQty), c.quantity)
+            val gap = max(0L, at - old.lastSeen)
+            val timeScore = (1.0 - min(1.0, gap / (15 * 60_000.0))).coerceIn(0.0, 1.0)
+            val behavior = when {
+                old.replenishments > 0 && old.moves > 0 -> 1.0
+                old.replenishments > 0 || old.moves > 0 -> 0.75
+                else -> 0.5
+            }
+            val score = (priceScore * 40 + qtyScore * 35 + timeScore * 15 + behavior * 10).toInt().coerceIn(0, 99)
+            if (score >= 68 && (best == null || score > best.score)) {
+                best = FingerprintMatch(
+                    old.fingerprintId.ifBlank { old.id },
+                    score,
+                    old.reappearances + 1,
+                    old.id
+                )
+            }
+        }
+        return best
     }
 
     private fun checkCrossExchange(w: MutableWall, at: Long) {
@@ -291,12 +385,21 @@ class WallTrackerEngine(context: Context) : TrackingMarketListener {
         while (running.get()) {
             try {
                 val now = System.currentTimeMillis()
-                if (forceRefreshAssets || now - lastAssetRefreshAt >= 60_000L) refreshAssets(false)
-                if (now - lastRemotePullAt >= 15_000L) {
+                val selected = store.powerProfile()
+                if (selected.mode != profile.mode) {
+                    profile = selected
+                    runtime.edit().putString("power_mode", profile.mode.name).apply()
+                    sockets?.setProfile(profile)
+                    forceRefreshAssets = true
+                    dirty = true
+                }
+                if (now - lastOrderRefreshAt >= profile.orderRefreshMs) runCatching { refreshChkOrders(false) }
+                if (forceRefreshAssets || now - lastAssetRefreshAt >= profile.assetRefreshMs) refreshAssets(false)
+                if (now - lastRemotePullAt >= profile.remotePullMs) {
                     lastRemotePullAt = now
                     runCatching { remote.pullCommand() }.getOrNull()?.let { executeCommand(it) }
                 }
-                if ((dirty && now - lastRemotePushAt >= 10_000L) || now - lastRemotePushAt >= 60_000L) {
+                if ((dirty && now - lastRemotePushAt >= profile.remoteDirtyPushMs) || now - lastRemotePushAt >= profile.remoteHeartbeatMs) {
                     runCatching { remote.pushState(stateJson()) }.onSuccess {
                         lastRemotePushAt = now
                         store.setLastRemotePushAt(now)
@@ -305,24 +408,68 @@ class WallTrackerEngine(context: Context) : TrackingMarketListener {
                 }
                 if (now - lastCleanupAt >= 6 * 60 * 60_000L) {
                     store.cleanup(now)
+                    synchronized(lock) { active.entries.removeAll { it.value.status != "ACTIVE" && now - it.value.lastSeen > 30 * 60_000L } }
                     lastCleanupAt = now
                 }
-                Thread.sleep(3_000L)
+                Thread.sleep(profile.maintenanceSleepMs)
             } catch (_: InterruptedException) {
                 break
             } catch (_: Throwable) {
-                try { Thread.sleep(5_000L) } catch (_: InterruptedException) { break }
+                try { Thread.sleep(max(2_000L, profile.maintenanceSleepMs)) } catch (_: InterruptedException) { break }
             }
         }
+    }
+
+    private fun refreshChkOrders(force: Boolean) {
+        val now = System.currentTimeMillis()
+        if (!force && now - lastOrderRefreshAt < profile.orderRefreshMs) return
+        lastOrderRefreshAt = now
+        val bundle = proposalClient.list()
+        val rows = mutableListOf<ChkOrderZone>()
+        bundle.pending.forEach { p ->
+            p.limitPrice?.takeIf { it > 0.0 }?.let { rows += ChkOrderZone(p.id, p.baseAsset, p.symbol, p.side, it, "PROPOSAL", p.createdAt ?: "") }
+        }
+        bundle.processing.forEach { p ->
+            p.limitPrice?.takeIf { it > 0.0 }?.let { rows += ChkOrderZone(p.id, p.baseAsset, p.symbol, p.side, it, "PLACED", p.createdAt ?: "") }
+        }
+        for (i in 0 until bundle.recent.length()) {
+            val o = bundle.recent.optJSONObject(i) ?: continue
+            val result = o.optJSONObject("result") ?: JSONObject()
+            val symbol = o.optString("symbol", result.optString("symbol")).uppercase(Locale.US)
+            if (!symbol.endsWith("USDC")) continue
+            val side = o.optString("side", result.optString("side")).uppercase(Locale.US)
+            if (side != "BUY" && side != "SELL") continue
+            val orderId = o.optString("bybit_order_id", result.optString("orderId"))
+            val rawStatus = result.optString("orderStatus")
+            val state = OrderLifecycle.fromBybit(rawStatus, orderId, result.optDouble("executedQty", 0.0))
+            if (state !in setOf(CanonicalOrderState.PLACED, CanonicalOrderState.OPEN, CanonicalOrderState.PARTIAL)) continue
+            val price = o.optDouble("limit_price", 0.0).takeIf { it > 0.0 }
+                ?: result.optString("requestedPrice").toDoubleOrNull()?.takeIf { it > 0.0 }
+                ?: continue
+            rows += ChkOrderZone(o.optString("id", orderId), symbol.removeSuffix("USDC"), symbol, side, price, state.name, o.optString("created_at"))
+        }
+        chkOrders = rows.distinctBy { "${it.id}:${it.state}" }.take(80)
+        openOrderAssets = chkOrders.filter { it.state in setOf("PLACED", "OPEN", "PARTIAL") }.map { it.asset }.toSet()
+        forceRefreshAssets = true
+        dirty = true
     }
 
     private fun refreshAssets(force: Boolean) {
         lastAssetRefreshAt = System.currentTimeMillis()
         forceRefreshAssets = false
-        val assets = store.heldAssets()
-        if (!force && assets == heldAssets) return
-        heldAssets = assets
-        runtime.edit().putString("held_assets", assets.sorted().joinToString(",")).putInt("tracked_asset_count", assets.size).apply()
+        heldAssets = store.heldAssets()
+        val ordered = linkedSetOf<String>()
+        ordered += "BTC"; ordered += "ETH"
+        openOrderAssets.sorted().forEach { ordered += it }
+        heldAssets.sorted().forEach { ordered += it }
+        val assets = ordered.take(profile.maxTrackedAssets).toSet()
+        if (!force && assets == priorityAssets) return
+        priorityAssets = assets
+        runtime.edit()
+            .putString("held_assets", heldAssets.sorted().joinToString(","))
+            .putString("priority_assets", priorityAssets.sorted().joinToString(","))
+            .putInt("tracked_asset_count", priorityAssets.size)
+            .apply()
         if (assets.isEmpty() || !store.enabled()) {
             sockets?.stop(); sockets = null
             binancePairs = emptyMap(); bybitPairs = emptyMap(); reverseBinance = emptyMap(); reverseBybit = emptyMap()
@@ -336,8 +483,8 @@ class WallTrackerEngine(context: Context) : TrackingMarketListener {
         reverseBybit = bybitPairs.entries.associate { it.value to it.key }
         val b = binancePairs.values.toSet()
         val y = bybitPairs.values.toSet()
-        if (sockets == null) sockets = TrackingSocketManager(this).also { it.start(b, y) }
-        else sockets?.update(b, y)
+        if (sockets == null) sockets = TrackingSocketManager(this, profile).also { it.start(b, y) }
+        else sockets?.update(b, y, profile)
         dirty = true
     }
 
@@ -354,6 +501,14 @@ class WallTrackerEngine(context: Context) : TrackingMarketListener {
                     forceRefreshAssets = true
                     if (!enabled) { sockets?.stop(); sockets = null }
                 }
+                "SET_POWER_MODE" -> {
+                    val mode = TrackingPowerMode.parse(c.optString("mode"))
+                    store.setPowerMode(mode)
+                    profile = store.powerProfile()
+                    sockets?.setProfile(profile)
+                    forceRefreshAssets = true
+                    result.put("mode", mode.name)
+                }
                 "SET_THRESHOLDS" -> {
                     if (c.has("minWallNotional")) store.setMinWallNotional(c.optDouble("minWallNotional"))
                     if (c.has("minWallStrength")) store.setMinWallStrength(c.optDouble("minWallStrength"))
@@ -365,7 +520,7 @@ class WallTrackerEngine(context: Context) : TrackingMarketListener {
                     val wallId = c.optString("wallId")
                     val content = c.optString("content").trim()
                     require(content.isNotBlank()) { "Note vide" }
-                    if (asset.isNotBlank()) require(asset in heldAssets) { "Actif non détenu" }
+                    if (asset.isNotBlank()) require(asset in priorityAssets) { "Actif non suivi" }
                     result.put("noteId", store.addNote(asset, wallId, content))
                 }
                 "UPDATE_NOTE" -> {
@@ -376,7 +531,10 @@ class WallTrackerEngine(context: Context) : TrackingMarketListener {
                     val id = c.optLong("id", 0L); require(id > 0L) { "ID note invalide" }
                     result.put("deleted", store.deleteNote(id))
                 }
-                "REFRESH_ASSETS" -> forceRefreshAssets = true
+                "REFRESH_ASSETS" -> {
+                    runCatching { refreshChkOrders(true) }
+                    forceRefreshAssets = true
+                }
                 else -> throw IllegalArgumentException("Commande tracking non supportée: $op")
             }
         } catch (e: Throwable) {
@@ -390,44 +548,163 @@ class WallTrackerEngine(context: Context) : TrackingMarketListener {
         val now = System.currentTimeMillis()
         val walls = synchronized(lock) { active.values.filter { it.status == "ACTIVE" }.map { it.snapshot().toJson(now) } }
         val notes = store.notes(50)
+        val links = buildChkOrderWallLinks(walls)
         return JSONObject().apply {
             put("trackingAvailable", true)
             put("trackingRunsOnDevice", true)
             put("rawOrderbookStoredLocally", false)
             put("rawOrderbookSentToRender", false)
-            put("trackedAssetsMode", "PORTFOLIO_HOLDINGS_ONLY")
+            put("trackedAssetsMode", "BTC_ETH_PLUS_HOLDINGS_PLUS_OPEN_ORDERS")
             put("requiresInternet", true)
             put("worksScreenOff", true)
             put("enabled", store.enabled())
+            put("screenInteractive", powerManager.isInteractive)
             put("updatedAt", now)
             put("connections", JSONObject().apply {
-                put("BINANCE", JSONObject().apply { put("connected", connections["BINANCE"] == true); put("detail", connectionDetails["BINANCE"] ?: "") })
-                put("BYBIT", JSONObject().apply { put("connected", connections["BYBIT"] == true); put("detail", connectionDetails["BYBIT"] ?: "") })
+                put("BINANCE", exchangeState("BINANCE", now))
+                put("BYBIT", exchangeState("BYBIT", now))
             })
-            put("settings", JSONObject().apply { put("minWallNotional", store.minWallNotional()); put("minWallStrength", store.minWallStrength()) })
+            put("settings", JSONObject().apply {
+                put("powerMode", profile.mode.name)
+                put("defaultPowerMode", TrackingPowerMode.BALANCED.name)
+                put("minWallNotional", store.minWallNotional())
+                put("minWallStrength", store.minWallStrength())
+                put("bookDispatchMs", profile.bookDispatchMs)
+                put("remoteDirtyPushMs", profile.remoteDirtyPushMs)
+                put("screenOffWriteReduction", true)
+            })
+            put("orderStatePolicy", JSONObject().apply {
+                put("states", JSONArray(listOf("PLACED", "OPEN", "PARTIAL", "FILLED")))
+                put("pnlAndTransactionsRequire", "FILLED")
+                put("bybitIsSourceOfTruth", true)
+            })
+            put("institutionalInferencePolicy", "Aucun mur n'est qualifié d'institutionnel sans preuve externe vérifiable. Le score spoofing est seulement comportemental/probabiliste.")
             put("assets", JSONArray().apply {
-                heldAssets.sorted().forEach { asset -> put(JSONObject().apply {
-                    put("asset", asset)
-                    put("binanceSymbol", binancePairs[asset] ?: JSONObject.NULL)
-                    put("bybitSymbol", bybitPairs[asset] ?: JSONObject.NULL)
-                    put("binancePrice", binancePairs[asset]?.let { prices["BINANCE:$it"] } ?: JSONObject.NULL)
-                    put("bybitPrice", bybitPairs[asset]?.let { prices["BYBIT:$it"] } ?: JSONObject.NULL)
-                    put("activeWalls", walls.count { it.optString("asset") == asset })
-                }) }
+                priorityAssets.forEach { asset -> put(assetJson(asset, walls, now)) }
             })
             put("walls", JSONArray(walls))
-            put("events", store.recentEvents(80))
-            put("crossExchangeMatches", store.recentMatches(40))
+            put("events", store.recentEvents(100))
+            put("crossExchangeMatches", store.recentMatches(50))
+            put("chkOrderWallLinks", links)
+            put("openChkOrders", JSONArray().apply { chkOrders.forEach { put(it.toJson()) } })
             put("connectionGaps", store.recentGaps(20))
             put("notes", JSONArray().apply { notes.forEach { put(it.toJson()) } })
         }
+    }
+
+    private fun assetJson(asset: String, walls: List<JSONObject>, now: Long): JSONObject = JSONObject().apply {
+        put("asset", asset)
+        put("held", asset in heldAssets)
+        put("openOrderPriority", asset in openOrderAssets)
+        put("alwaysPriority", asset == "BTC" || asset == "ETH")
+        val bSymbol = binancePairs[asset]
+        val ySymbol = bybitPairs[asset]
+        put("binanceSymbol", bSymbol ?: JSONObject.NULL)
+        put("bybitSymbol", ySymbol ?: JSONObject.NULL)
+        val bQuote = bSymbol?.let { quotes["BINANCE:$it"] }
+        val yQuote = ySymbol?.let { quotes["BYBIT:$it"] }
+        val bBook = bSymbol?.let { books["BINANCE:$it"] }
+        val yBook = ySymbol?.let { books["BYBIT:$it"] }
+        put("binancePrice", bQuote?.lastPrice ?: 0.0)
+        put("bybitPrice", yQuote?.lastPrice ?: 0.0)
+        put("binanceFeed", feedJson(bQuote, bBook, now))
+        put("bybitFeed", feedJson(yQuote, yBook, now))
+        put("activeWalls", walls.count { it.optString("asset") == asset })
+    }
+
+    private fun feedJson(quote: TrackingQuote?, book: BookSnapshot?, now: Long): JSONObject = JSONObject().apply {
+        val latest = max(quote?.timestamp ?: 0L, book?.timestamp ?: 0L)
+        val age = if (latest > 0L) max(0L, now - latest) else Long.MAX_VALUE
+        put("ready", quote != null || book != null)
+        put("fresh", latest > 0L && age <= profile.freshnessMs)
+        put("ageMs", if (latest > 0L) age else -1L)
+        put("last", quote?.lastPrice ?: bestMid(book))
+        put("bid", quote?.bid?.takeIf { it > 0.0 } ?: book?.bids?.firstOrNull()?.price ?: 0.0)
+        put("ask", quote?.ask?.takeIf { it > 0.0 } ?: book?.asks?.firstOrNull()?.price ?: 0.0)
+        put("quoteAt", quote?.timestamp ?: 0L)
+        put("bookAt", book?.timestamp ?: 0L)
+        put("source", quote?.source ?: if (book != null) "orderbook" else "warming")
+        put("book", JSONObject().apply {
+            put("bids", JSONArray().apply { book?.bids?.forEach { put(JSONArray().put(it.price).put(it.quantity)) } })
+            put("asks", JSONArray().apply { book?.asks?.forEach { put(JSONArray().put(it.price).put(it.quantity)) } })
+        })
+    }
+
+    private fun bestMid(book: BookSnapshot?): Double {
+        val bid = book?.bids?.firstOrNull()?.price ?: 0.0
+        val ask = book?.asks?.firstOrNull()?.price ?: 0.0
+        return when {
+            bid > 0.0 && ask > 0.0 -> (bid + ask) / 2.0
+            bid > 0.0 -> bid
+            ask > 0.0 -> ask
+            else -> 0.0
+        }
+    }
+
+    private fun exchangeState(exchange: String, now: Long): JSONObject {
+        val quoteAt = freshness["$exchange:quote"] ?: 0L
+        val bookAt = freshness["$exchange:book"] ?: 0L
+        val tradeAt = freshness["$exchange:trade"] ?: 0L
+        val latest = max(quoteAt, max(bookAt, tradeAt))
+        val age = if (latest > 0L) max(0L, now - latest) else -1L
+        return JSONObject().apply {
+            put("transportConnected", connections[exchange] == true)
+            put("ready", latest > 0L)
+            put("fresh", latest > 0L && age <= profile.freshnessMs)
+            put("ageMs", age)
+            put("lastQuoteAt", quoteAt)
+            put("lastBookAt", bookAt)
+            put("lastTradeAt", tradeAt)
+            put("connectionChangedAt", connectionChangedAt[exchange] ?: 0L)
+            put("detail", connectionDetails[exchange] ?: "")
+        }
+    }
+
+    private fun buildChkOrderWallLinks(walls: List<JSONObject>): JSONArray = JSONArray().apply {
+        for (order in chkOrders) {
+            for (wall in walls) {
+                if (wall.optString("asset") != order.asset) continue
+                val wp = wall.optDouble("price", 0.0)
+                if (wp <= 0.0 || order.price <= 0.0) continue
+                val distance = abs(wp - order.price) / max(wp, order.price)
+                if (distance > 0.015) continue
+                val wallSide = wall.optString("side")
+                val relation = when {
+                    order.side == "BUY" && wallSide == "BUY" -> "BUY_NEAR_BUY_WALL"
+                    order.side == "BUY" && wallSide == "SELL" -> "BUY_BELOW_SELL_WALL"
+                    order.side == "SELL" && wallSide == "SELL" -> "SELL_NEAR_SELL_WALL"
+                    else -> "SELL_INTO_BUY_WALL"
+                }
+                put(JSONObject().apply {
+                    put("orderId", order.id); put("orderState", order.state); put("asset", order.asset); put("orderSide", order.side)
+                    put("orderPrice", order.price); put("wallId", wall.optString("id")); put("wallExchange", wall.optString("exchange"))
+                    put("wallSide", wallSide); put("wallPrice", wp); put("distancePercent", distance * 100.0); put("relation", relation)
+                })
+            }
+        }
+    }
+
+    private fun markFresh(exchange: String, type: String, timestamp: Long) {
+        freshness["$exchange:$type"] = max(freshness["$exchange:$type"] ?: 0L, timestamp)
+    }
+
+    private fun maybeWriteRuntimeFresh(exchange: String, quote: TrackingQuote) {
+        val now = System.currentTimeMillis()
+        if (now - lastRuntimeFreshWrite < 5_000L && runtime.getBoolean("${exchange.lowercase(Locale.US)}_connected", false)) return
+        lastRuntimeFreshWrite = now
+        runtime.edit()
+            .putBoolean("${exchange.lowercase(Locale.US)}_connected", true)
+            .putBoolean("${exchange.lowercase(Locale.US)}_feed_ready", true)
+            .putLong("${exchange.lowercase(Locale.US)}_last_data_at", quote.timestamp)
+            .putLong("connection_updated_at", now)
+            .apply()
     }
 
     private fun updateGapState() {
         val expectedBinance = binancePairs.isNotEmpty()
         val expectedBybit = bybitPairs.isNotEmpty()
         val complete = (!expectedBinance || connections["BINANCE"] == true) && (!expectedBybit || connections["BYBIT"] == true)
-        if (heldAssets.isEmpty() || !store.enabled()) return
+        if (priorityAssets.isEmpty() || !store.enabled()) return
         if (complete) store.closeGap() else {
             val missing = buildList {
                 if (expectedBinance && connections["BINANCE"] != true) add("Binance")
@@ -451,7 +728,30 @@ class WallTrackerEngine(context: Context) : TrackingMarketListener {
         else -> String.format(Locale.FRANCE, "%.8f", value)
     }
 
+    private fun durationText(ms: Long): String = when {
+        ms < 60_000L -> "${max(0L, ms) / 1000}s"
+        ms < 3_600_000L -> "${ms / 60_000L}min"
+        else -> String.format(Locale.FRANCE, "%.1fh", ms / 3_600_000.0)
+    }
+
+    private data class BookSnapshot(val bids: List<TrackingBookLevel>, val asks: List<TrackingBookLevel>, val timestamp: Long)
     private data class Candidate(val price: Double, val quantity: Double, val strength: Double, val notional: Double)
+    private data class FingerprintMatch(val fingerprintId: String, val score: Int, val reappearances: Int, val previousId: String)
+
+    private data class ChkOrderZone(
+        val id: String,
+        val asset: String,
+        val symbol: String,
+        val side: String,
+        val price: Double,
+        val state: String,
+        val createdAt: String
+    ) {
+        fun toJson(): JSONObject = JSONObject().apply {
+            put("id", id); put("asset", asset); put("symbol", symbol); put("side", side); put("price", price)
+            put("state", state); put("createdAt", createdAt)
+        }
+    }
 
     private data class MutableWall(
         val id: String,
@@ -473,19 +773,26 @@ class WallTrackerEngine(context: Context) : TrackingMarketListener {
         var replenishments: Int,
         var status: String,
         var lastEvent: String,
-        var lastPersistAt: Long
+        var lastPersistAt: Long,
+        var fingerprintId: String,
+        var fingerprintConfidence: Int,
+        var reappearances: Int,
+        var pendingTradeQty: Double = 0.0,
+        var pendingTradeNotional: Double = 0.0,
+        var lastTradePersistAt: Long = 0L,
+        var spoofAlerted: Boolean = false
     ) {
         fun snapshot(): TrackingWall {
             val age = max(0L, lastSeen - firstSeen)
-            var single = 30 + min(24, moves * 7) + min(30, replenishments * 9)
+            var single = 25 + min(24, moves * 7) + min(28, replenishments * 9) + min(12, reappearances * 4)
+            if (fingerprintConfidence >= 80) single += 8 else if (fingerprintConfidence >= 68) single += 4
             if (age >= 60_000L) single += 5
             if (age >= 5 * 60_000L) single += 5
             if (strength >= 8.0) single += 5
-            if (moves >= 2 && replenishments >= 1) single += 5
-            single = single.coerceIn(15, 90)
-            var multi = 10
-            if (moves == 0) multi += 12
-            if (replenishments == 0) multi += 10
+            single = single.coerceIn(12, 92)
+            var multi = 12
+            if (moves == 0) multi += 10
+            if (replenishments == 0) multi += 8
             if (cancelled > initialQty * 0.6 && moves == 0) multi += 8
             multi = multi.coerceIn(8, 55)
             if (single + multi > 95) multi = max(5, 95 - single)
@@ -494,10 +801,24 @@ class WallTrackerEngine(context: Context) : TrackingMarketListener {
             val normalizedSingle = (single * 100.0 / total).toInt()
             val normalizedMulti = (multi * 100.0 / total).toInt()
             val normalizedUnknown = 100 - normalizedSingle - normalizedMulti
+
+            val cancellationRatio = if (initialQty > 0.0) (cancelled / initialQty).coerceIn(0.0, 2.0) else 0.0
+            val executionRatio = if (initialQty > 0.0) (executed / initialQty).coerceIn(0.0, 2.0) else 0.0
+            var spoof = 0
+            if (age < 20_000L && cancellationRatio > 0.65) spoof += 38
+            if (age < 60_000L && cancellationRatio > 0.80) spoof += 20
+            if (moves >= 2 && cancellationRatio > 0.45) spoof += 14
+            if (reappearances >= 2 && cancellationRatio > 0.45) spoof += 16
+            if (executionRatio < 0.10 && cancellationRatio > 0.70) spoof += 18
+            if (replenishments > 0 && executionRatio > 0.35) spoof -= 18
+            if (status == "ABSORBED") spoof -= 25
+            spoof = spoof.coerceIn(0, 95)
+
             return TrackingWall(
                 id, asset, exchange, symbol, side, firstSeen, lastSeen, initialPrice, price, initialQty, qty,
                 executed, cancelled, strength, moves, replenishments, status,
-                normalizedSingle, normalizedMulti, normalizedUnknown, lastEvent
+                normalizedSingle, normalizedMulti, normalizedUnknown, lastEvent,
+                fingerprintId, fingerprintConfidence, reappearances, spoof
             )
         }
 
@@ -505,8 +826,18 @@ class WallTrackerEngine(context: Context) : TrackingMarketListener {
             fun from(w: TrackingWall) = MutableWall(
                 w.id, w.asset, w.exchange, w.symbol, w.side, w.firstSeen, w.lastSeen, w.initialPrice,
                 w.currentPrice, w.initialQty, w.currentQty, w.executedQty, w.executedQty, w.cancelledQty,
-                w.strength, w.moves, w.replenishments, w.status, w.lastEvent, 0L
+                w.strength, w.moves, w.replenishments, w.status, w.lastEvent, 0L,
+                w.fingerprintId.ifBlank { w.id }, w.fingerprintConfidence, w.reappearances,
+                spoofAlerted = w.spoofingProbability >= 75
             )
         }
+    }
+
+    companion object {
+        private val WALL_HISTORY_EVENTS = setOf(
+            "APPEARED", "REAPPEARED", "MOVED", "REPLENISHED", "ABSORBING", "REDUCED", "MIXED_REDUCTION",
+            "ABSORBED", "CANCELLED", "DISAPPEARED"
+        )
+        private val ALERT_EVENTS = setOf("REAPPEARED", "MOVED", "REPLENISHED", "ABSORBED", "CANCELLED", "DISAPPEARED")
     }
 }
