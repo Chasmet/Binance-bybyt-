@@ -35,6 +35,8 @@ class WallTrackerEngine(context: Context) : TrackingMarketListener {
     private var sockets: TrackingSocketManager? = null
     private var worker: Thread? = null
     private var heldAssets: Set<String> = emptySet()
+    private var portfolioValuesUsdc: Map<String, Double> = emptyMap()
+    private var eligibleHeldAssets: Set<String> = emptySet()
     private var priorityAssets: Set<String> = emptySet()
     private var openOrderAssets: Set<String> = emptySet()
     private var binancePairs: Map<String, String> = emptyMap()
@@ -458,17 +460,19 @@ class WallTrackerEngine(context: Context) : TrackingMarketListener {
         lastAssetRefreshAt = System.currentTimeMillis()
         forceRefreshAssets = false
         heldAssets = store.heldAssets()
-        val ordered = linkedSetOf<String>()
-        ordered += "BTC"; ordered += "ETH"
-        openOrderAssets.sorted().forEach { ordered += it }
-        heldAssets.sorted().forEach { ordered += it }
-        val assets = ordered.take(profile.maxTrackedAssets).toSet()
+        portfolioValuesUsdc = loadPortfolioValuesUsdc()
+        val eligible = TrackingAssetPolicy.eligibleHoldings(portfolioValuesUsdc)
+        eligibleHeldAssets = eligible.map { it.first }.toSet()
+        val assets = TrackingAssetPolicy.select(portfolioValuesUsdc, profile.maxTrackedAssets).toSet()
         if (!force && assets == priorityAssets) return
         priorityAssets = assets
         runtime.edit()
             .putString("held_assets", heldAssets.sorted().joinToString(","))
-            .putString("priority_assets", priorityAssets.sorted().joinToString(","))
+            .putString("eligible_assets", eligible.map { it.first }.joinToString(","))
+            .putString("priority_assets", priorityAssets.joinToString(","))
             .putInt("tracked_asset_count", priorityAssets.size)
+            .putFloat("auto_tracking_min_holding_usdc", TrackingAssetPolicy.MIN_HOLDING_USDC.toFloat())
+            .putInt("auto_tracking_max_assets", profile.maxTrackedAssets)
             .apply()
         if (assets.isEmpty() || !store.enabled()) {
             sockets?.stop(); sockets = null
@@ -486,6 +490,34 @@ class WallTrackerEngine(context: Context) : TrackingMarketListener {
         if (sockets == null) sockets = TrackingSocketManager(this, profile).also { it.start(b, y) }
         else sockets?.update(b, y, profile)
         dirty = true
+    }
+
+    private fun loadPortfolioValuesUsdc(): Map<String, Double> {
+        val workspace = app.getSharedPreferences("chk_workspace", Context.MODE_PRIVATE)
+        val totals = linkedMapOf<String, Double>()
+        listOf("BINANCE" to "v4_snapshot_binance", "BYBIT" to "v4_snapshot_bybit").forEach { (exchange, key) ->
+            val raw = workspace.getString(key, null)
+                ?: if (exchange == "BINANCE") workspace.getString("last_snapshot", null) else workspace.getString("bybit_last_snapshot", null)
+                ?: return@forEach
+            runCatching {
+                val root = JSONObject(raw)
+                val array = root.optJSONArray("holdings") ?: root.optJSONArray("assets") ?: JSONArray()
+                for (i in 0 until array.length()) {
+                    val holding = array.optJSONObject(i) ?: continue
+                    val asset = holding.optString("asset").uppercase(Locale.US).trim()
+                    if (!asset.matches(Regex("^[A-Z0-9]{2,16}$"))) continue
+                    val amount = holding.optDouble("amount", holding.optDouble("free", 0.0))
+                    if (amount <= 0.0) continue
+                    var value = holding.optDouble("valueUsdt", 0.0)
+                    if (!value.isFinite() || value <= 0.0) {
+                        val price = holding.optDouble("priceUsdt", holding.optDouble("currentPriceUsdt", 0.0))
+                        if (price.isFinite() && price > 0.0) value = amount * price
+                    }
+                    if (value.isFinite() && value > 0.0) totals[asset] = (totals[asset] ?: 0.0) + value
+                }
+            }
+        }
+        return totals
     }
 
     private fun executeCommand(pending: TrackingRemoteClient.PendingCommand) {
@@ -554,7 +586,7 @@ class WallTrackerEngine(context: Context) : TrackingMarketListener {
             put("trackingRunsOnDevice", true)
             put("rawOrderbookStoredLocally", false)
             put("rawOrderbookSentToRender", false)
-            put("trackedAssetsMode", "BTC_ETH_PLUS_HOLDINGS_PLUS_OPEN_ORDERS")
+            put("trackedAssetsMode", "BTC_ETH_PLUS_TOP_HOLDINGS_OVER_10_USDC")
             put("requiresInternet", true)
             put("worksScreenOff", true)
             put("enabled", store.enabled())
@@ -569,6 +601,8 @@ class WallTrackerEngine(context: Context) : TrackingMarketListener {
                 put("defaultPowerMode", TrackingPowerMode.BALANCED.name)
                 put("minWallNotional", store.minWallNotional())
                 put("minWallStrength", store.minWallStrength())
+                put("minTrackedHoldingUsdc", TrackingAssetPolicy.MIN_HOLDING_USDC)
+                put("maxTrackedAssets", profile.maxTrackedAssets)
                 put("bookDispatchMs", profile.bookDispatchMs)
                 put("remoteDirtyPushMs", profile.remoteDirtyPushMs)
                 put("screenOffWriteReduction", true)
@@ -595,7 +629,9 @@ class WallTrackerEngine(context: Context) : TrackingMarketListener {
     private fun assetJson(asset: String, walls: List<JSONObject>, now: Long): JSONObject = JSONObject().apply {
         put("asset", asset)
         put("held", asset in heldAssets)
-        put("openOrderPriority", asset in openOrderAssets)
+        put("holdingValueUsdc", portfolioValuesUsdc[asset] ?: 0.0)
+        put("eligibleByHoldingValue", asset in eligibleHeldAssets)
+        put("openOrder", asset in openOrderAssets)
         put("alwaysPriority", asset == "BTC" || asset == "ETH")
         val bSymbol = binancePairs[asset]
         val ySymbol = bybitPairs[asset]
