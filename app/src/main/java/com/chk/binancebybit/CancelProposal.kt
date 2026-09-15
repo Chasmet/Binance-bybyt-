@@ -7,18 +7,23 @@ data class CancelProposal(
     val symbol: String,
     val targetOrderId: String,
     val targetOrderLinkId: String?,
+    val intent: String,
     val rationale: String,
     val confidence: Int?,
     val status: String,
     val expiresAt: String?,
     val createdAt: String?
 ) {
+    val hasExplicitIntent: Boolean
+        get() = intent == "CANCEL" || intent == "REPLACE"
+
     companion object {
         fun fromJson(o: JSONObject): CancelProposal = CancelProposal(
             id = o.optString("id"),
             symbol = o.optString("symbol").uppercase(),
             targetOrderId = o.optString("target_order_id"),
             targetOrderLinkId = o.optString("target_order_link_id").takeIf { it.isNotBlank() },
+            intent = o.optString("intent", "UNSPECIFIED").uppercase(),
             rationale = o.optString("rationale"),
             confidence = if (o.isNull("confidence")) null else o.optInt("confidence"),
             status = o.optString("status", "pending"),
