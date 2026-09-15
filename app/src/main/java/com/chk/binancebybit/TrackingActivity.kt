@@ -139,14 +139,16 @@ class TrackingActivity : Activity() {
         val rt = getSharedPreferences("chk_tracking_runtime", MODE_PRIVATE)
         val held = store.heldAssets().sorted()
         val priority = rt.getString("priority_assets", "").orEmpty().split(',').map { it.trim() }.filter { it.isNotBlank() }
+        val eligible = rt.getString("eligible_assets", "").orEmpty().split(',').map { it.trim() }.filter { it.isNotBlank() }.toSet()
         val walls = store.activeWalls(200)
         val now = System.currentTimeMillis()
-        page.addView(sectionTitle("Vue globale", "Priorité BTC/ETH + actifs détenus + ordres CHK ouverts"))
+        page.addView(sectionTitle("Vue globale", "BTC/ETH obligatoires + plus grosses positions de plus de 10 USDC"))
         page.addView(hero("TRACKING LOCAL", if (store.enabled()) "ACTIF" else "ARRÊTÉ", "${priority.size} suivi(s) • ${held.size} détenu(s) • ${walls.size} mur(s)", if (store.enabled()) green else red))
         page.addView(twoCards(
             feedMetric("Binance", "binance", yellow, rt, now),
             feedMetric("Bybit", "bybit", orange, rt, now)
         ))
+        page.addView(info("Filtre automatique", "BTC et ETH restent toujours suivis. Les autres cryptos doivent représenter strictement plus de 10 USDC au total sur Binance + Bybit. CHK garde ensuite les plus grosses positions : 5 actifs max en ULTRA ÉCO, 8 en ÉQUILIBRÉ et 12 en PERFORMANCE.", green))
         page.addView(info("Architecture batterie", "WebSocket événementiel : les deltas carnet sont agrégés en mémoire, les trades sont regroupés et les écritures baissent écran éteint. Aucun polling intensif du marché et aucun carnet brut envoyé à Render.", blue))
         page.addView(info("Attribution", "Le Fingerprint et le spoofing sont probabilistes. CHK Crypto ne qualifie jamais un mur d’institutionnel sans preuve externe vérifiable.", orange))
 
@@ -154,7 +156,11 @@ class TrackingActivity : Activity() {
         if (priority.isEmpty()) page.addView(empty("Flux en préparation", "Synchronise le portefeuille Classique. BTC/ETH sont prioritaires dès qu’une paire exploitable est résolue."))
         else priority.forEach { asset ->
             val count = walls.count { it.asset == asset }
-            val tags = buildList { if (asset == "BTC" || asset == "ETH") add("priorité"); if (asset in held) add("détenu") }.joinToString(" • ")
+            val tags = buildList {
+                if (asset == "BTC" || asset == "ETH") add("obligatoire")
+                if (asset in eligible) add(">10 USDC")
+                if (asset in held) add("détenu")
+            }.joinToString(" • ")
             page.addView(card().apply {
                 addView(label(asset, 18f, text, true))
                 addView(label("$count mur(s) actif(s)${if (tags.isNotBlank()) " • $tags" else ""}", 12f, muted, false).apply { setPadding(0, dp(4), 0, 0) })
@@ -164,7 +170,7 @@ class TrackingActivity : Activity() {
         page.addView(subTitle("Consommation"))
         val power = card()
         power.addView(label("Mode actuel : ${powerLabel(store.powerMode())}", 14f, green, true))
-        power.addView(label("ÉQUILIBRÉ est le mode par défaut. ULTRA ÉCO agrège davantage ; PERFORMANCE traite plus vite les variations du carnet.", 11f, muted, false).apply { setPadding(0, dp(4), 0, dp(8)) })
+        power.addView(label("ÉQUILIBRÉ est le mode par défaut : 8 actifs maximum. ULTRA ÉCO limite à 5 ; PERFORMANCE à 12.", 11f, muted, false).apply { setPadding(0, dp(4), 0, dp(8)) })
         power.addView(LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
             listOf(
@@ -328,13 +334,16 @@ class TrackingActivity : Activity() {
             if (value.isBlank()) Toast.makeText(this, "Écris une note", Toast.LENGTH_SHORT).show()
             else {
                 val a = asset.text.toString().trim().uppercase(Locale.US)
-                if (a.isNotBlank() && a !in store.heldAssets() && a != "BTC" && a != "ETH") Toast.makeText(this, "Cette crypto n'est pas suivie", Toast.LENGTH_LONG).show()
+                if (a.isNotBlank() && a !in priorityAssets()) Toast.makeText(this, "Cette crypto n'est pas suivie", Toast.LENGTH_LONG).show()
                 else { store.addNote(a, wall.text.toString().trim(), value); asset.setText(""); wall.setText(""); body.setText(""); Toast.makeText(this, "Note Tracking enregistrée", Toast.LENGTH_SHORT).show(); render() }
             }
         })
         page.addView(composer)
         attach(page)
     }
+
+    private fun priorityAssets(): Set<String> = getSharedPreferences("chk_tracking_runtime", MODE_PRIVATE)
+        .getString("priority_assets", "").orEmpty().split(',').map { it.trim() }.filter { it.isNotBlank() }.toSet()
 
     private fun powerLabel(mode: TrackingPowerMode) = when (mode) { TrackingPowerMode.ULTRA_ECO -> "ULTRA ÉCO"; TrackingPowerMode.BALANCED -> "ÉQUILIBRÉ"; TrackingPowerMode.PERFORMANCE -> "PERFORMANCE" }
     private fun page() = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; setPadding(dp(16), dp(8), dp(16), dp(28)) }
