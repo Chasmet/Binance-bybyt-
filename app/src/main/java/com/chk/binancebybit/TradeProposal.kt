@@ -62,10 +62,21 @@ data class TradeExecutionResult(
     val executedValueUsdc: Double,
     val averagePrice: Double
 ) {
+    val lifecycleState: CanonicalOrderState
+        get() = OrderLifecycle.fromBybit(orderStatus, orderId, executedQty)
+
+    val lifecycleStatus: String
+        get() = lifecycleState.name
+
+    val countsForPnlOrTransactions: Boolean
+        get() = OrderLifecycle.countsForPnlOrTransactions(lifecycleState)
+
     fun toJson(): JSONObject = JSONObject().apply {
         put("orderId", orderId)
         put("orderLinkId", orderLinkId)
         put("orderStatus", orderStatus)
+        put("lifecycleStatus", lifecycleStatus)
+        put("countsForPnlOrTransactions", countsForPnlOrTransactions)
         put("symbol", symbol)
         put("side", side)
         put("orderType", orderType)
