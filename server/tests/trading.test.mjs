@@ -17,6 +17,9 @@ test('catalog exposes batches first and shares the 30 USDC ceiling without alter
  assert.equal(tools.find(t=>t.name==='zoom_chart').inputSchema.properties.steps.maximum,10);
  for(const [name,field] of [['create_trade_proposal','quote_amount_usdc'],['create_cancel_proposal','replacement_quote_amount_usdc']])
   assert.equal(tools.find(t=>t.name===name).inputSchema.properties[field].maximum,30);
+ const cancel=tools.find(t=>t.name==='create_cancel_proposal');
+ assert.deepEqual(cancel.inputSchema.properties.intent.enum,['CANCEL','REPLACE']);
+ assert.ok(cancel.inputSchema.required.includes('intent'));
 });
 test('legacy creation persists a stable ID then waits without claiming a premature success',async()=>{
  const calls=[];const ext=createTradingExtension({accountFingerprint:account,bridge:async p=>{
@@ -104,11 +107,16 @@ test('stale OPEN status cannot become a final report when live Bybit lookup fail
  assert.equal(out.result.structuredContent.reportReady,false);assert.equal(out.result.structuredContent.allConfirmed,false);
  assert.equal(out.result.structuredContent.orders[0].status,'UNKNOWN');
 });
-test('cancel replacement accepts 30 USDC and keeps an uncertain response discoverable',async()=>{
+test('cancel replacement accepts 30 USDC only with explicit REPLACE intent and keeps uncertainty discoverable',async()=>{
  const sent=[];const ext=createTradingExtension({bridge:async p=>{sent.push(p);throw new Error('HTTP 500')}});
- const out=await ext.handle({id:1},'create_cancel_proposal',{symbol:order.symbol,target_order_id:'target',replacement_quote_amount_usdc:30});
- assert.equal(sent[0].replacementQuoteAmountUsdc,30);assert.equal(out.result.structuredContent.nextTool,'list_cancel_proposals');
+ const out=await ext.handle({id:1},'create_cancel_proposal',{intent:'REPLACE',symbol:order.symbol,target_order_id:'target',replacement_side:'SELL',replacement_order_type:'LIMIT',replacement_quote_amount_usdc:30,replacement_limit_price:1.50});
+ assert.equal(sent[0].intent,'REPLACE');assert.equal(sent[0].replacementQuoteAmountUsdc,30);assert.equal(out.result.structuredContent.nextTool,'list_cancel_proposals');
  assert.equal(sent.length,1);
+});
+test('auto-cancel proposal without explicit intent is rejected before bridge',async()=>{
+ let called=false;const ext=createTradingExtension({bridge:async()=>{called=true;return{};}});
+ const out=await ext.handle({id:1},'create_cancel_proposal',{symbol:order.symbol,target_order_id:'target'});
+ assert.equal(out.result.isError,true);assert.equal(called,false);assert.match(out.result.content[0].text,/CANCEL ou REPLACE/);
 });
 
 test('an exhausted tool deadline aborts a slow bridge without a second request',async()=>{
