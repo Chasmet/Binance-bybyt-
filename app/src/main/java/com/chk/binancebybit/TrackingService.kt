@@ -14,8 +14,9 @@ import java.util.concurrent.atomic.AtomicBoolean
 
 /**
  * Dedicated on-device foreground service for continuous Wall Tracking.
- * It never proxies exchange depth through Render. A partial wake lock is held only while the user
- * has Tracking enabled so the two public WebSockets can continue with the screen off.
+ * Raw depth never passes through Render. The service no longer holds an unbounded wake lock:
+ * a short, timed bootstrap lock lets sockets/engine start reliably, then Android can sleep normally.
+ * WebSocket callbacks remain event-driven and the foreground service keeps the tracking process alive.
  */
 class TrackingService : Service() {
     @Volatile private var engine: WallTrackerEngine? = null
@@ -35,13 +36,7 @@ class TrackingService : Service() {
             return START_NOT_STICKY
         }
         startForeground(NOTIFICATION_ID, notification())
-        if (wakeLock?.isHeld != true) {
-            val pm = getSystemService(Context.POWER_SERVICE) as PowerManager
-            wakeLock = pm.newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "CHKCrypto:WallTracking").apply {
-                setReferenceCounted(false)
-                acquire()
-            }
-        }
+        acquireBootstrapWakeLock(store.powerMode())
         if (engine == null && starting.compareAndSet(false, true)) {
             Thread {
                 try {
@@ -58,6 +53,20 @@ class TrackingService : Service() {
         return START_STICKY
     }
 
+    private fun acquireBootstrapWakeLock(mode: TrackingPowerMode) {
+        val pm = getSystemService(Context.POWER_SERVICE) as PowerManager
+        wakeLock?.let { if (it.isHeld) it.release() }
+        wakeLock = pm.newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "CHKCrypto:WallTrackingBootstrap").apply {
+            setReferenceCounted(false)
+            val timeout = when (mode) {
+                TrackingPowerMode.ULTRA_ECO -> 20_000L
+                TrackingPowerMode.BALANCED -> 45_000L
+                TrackingPowerMode.PERFORMANCE -> 90_000L
+            }
+            acquire(timeout)
+        }
+    }
+
     override fun onDestroy() {
         destroyed.set(true)
         engine?.stop()
@@ -70,10 +79,12 @@ class TrackingService : Service() {
     override fun onBind(intent: Intent?): IBinder? = null
 
     private fun notification(): Notification {
+        val store = TrackingStore(this)
         val rt = getSharedPreferences("chk_tracking_runtime", MODE_PRIVATE)
-        val count = rt.getInt("tracked_asset_count", TrackingStore(this).heldAssets().size)
-        val bOk = rt.getBoolean("binance_connected", false)
-        val yOk = rt.getBoolean("bybit_connected", false)
+        val count = rt.getInt("tracked_asset_count", store.heldAssets().size)
+        val bOk = rt.getBoolean("binance_feed_ready", false)
+        val yOk = rt.getBoolean("bybit_feed_ready", false)
+        val mode = store.powerMode()
         val open = PendingIntent.getActivity(
             this,
             9821,
@@ -90,12 +101,18 @@ class TrackingService : Service() {
         return builder
             .setSmallIcon(R.drawable.app_icon)
             .setContentTitle("CHK Crypto • Tracking actif")
-            .setContentText("$count actif(s) • Binance ${if (bOk) "✓" else "…"} • Bybit ${if (yOk) "✓" else "…"}")
+            .setContentText("$count actif(s) • ${modeLabel(mode)} • Binance ${if (bOk) "✓" else "…"} • Bybit ${if (yOk) "✓" else "…"}")
             .setContentIntent(open)
             .setOngoing(true)
             .setOnlyAlertOnce(true)
             .setPriority(Notification.PRIORITY_LOW)
             .build()
+    }
+
+    private fun modeLabel(mode: TrackingPowerMode): String = when (mode) {
+        TrackingPowerMode.ULTRA_ECO -> "ULTRA ÉCO"
+        TrackingPowerMode.BALANCED -> "ÉQUILIBRÉ"
+        TrackingPowerMode.PERFORMANCE -> "PERFORMANCE"
     }
 
     companion object {
@@ -121,7 +138,7 @@ class TrackingService : Service() {
                 "Tracking CHK Crypto",
                 NotificationManager.IMPORTANCE_LOW
             ).apply {
-                description = "Wall Tracker local Binance + Bybit actif en arrière-plan et écran éteint."
+                description = "Wall Tracker local Binance + Bybit, optimisé batterie et actif en arrière-plan."
                 setShowBadge(false)
             })
         }

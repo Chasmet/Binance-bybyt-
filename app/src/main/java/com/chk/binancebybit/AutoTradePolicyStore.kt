@@ -4,6 +4,11 @@ import android.content.Context
 import java.time.Instant
 import java.time.LocalDate
 
+enum class CancelAutomationMode {
+    ANALYSIS_ONLY,
+    EXECUTION_ENABLED
+}
+
 class AutoTradePolicyStore(context: Context) {
     private val prefs = context.applicationContext.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
 
@@ -15,6 +20,11 @@ class AutoTradePolicyStore(context: Context) {
                 if (prefs.getFloat(KEY_MAX_ORDER, 10f) == 10f) edit.putFloat(KEY_MAX_ORDER, 30f)
                 if (prefs.getInt(KEY_MAX_ORDERS, 3) == 3) edit.putInt(KEY_MAX_ORDERS, 5)
                 edit.commit()
+            }
+            // Safety migration: existing cancel permission never silently enables execution after
+            // this version. The user must explicitly leave ANALYSIS_ONLY in the settings screen.
+            if (!prefs.contains(KEY_CANCEL_MODE)) {
+                prefs.edit().putString(KEY_CANCEL_MODE, CancelAutomationMode.ANALYSIS_ONLY.name).commit()
             }
         }
     }
@@ -38,9 +48,24 @@ class AutoTradePolicyStore(context: Context) {
         val wasEnabled = allowCancelReplace()
         val edit = prefs.edit().putBoolean(KEY_CANCEL_REPLACE, value)
         if (value && !wasEnabled) edit.putLong(KEY_CANCEL_REPLACE_ARMED_AT, System.currentTimeMillis())
+        if (!value) edit.putString(KEY_CANCEL_MODE, CancelAutomationMode.ANALYSIS_ONLY.name)
         edit.apply()
     }
     fun cancelReplaceArmedAt(): Long = prefs.getLong(KEY_CANCEL_REPLACE_ARMED_AT, Long.MAX_VALUE)
+
+    fun cancelAutomationMode(): CancelAutomationMode = runCatching {
+        CancelAutomationMode.valueOf(prefs.getString(KEY_CANCEL_MODE, CancelAutomationMode.ANALYSIS_ONLY.name)!!)
+    }.getOrDefault(CancelAutomationMode.ANALYSIS_ONLY)
+
+    fun setCancelAutomationMode(mode: CancelAutomationMode) {
+        val edit = prefs.edit().putString(KEY_CANCEL_MODE, mode.name)
+        if (mode == CancelAutomationMode.EXECUTION_ENABLED) {
+            edit.putLong(KEY_CANCEL_EXECUTION_ARMED_AT, System.currentTimeMillis())
+        }
+        edit.apply()
+    }
+
+    fun cancelExecutionArmedAt(): Long = prefs.getLong(KEY_CANCEL_EXECUTION_ARMED_AT, Long.MAX_VALUE)
 
     fun maxOrderUsdc(): Double = prefs.getFloat(KEY_MAX_ORDER, 30f).toDouble().coerceIn(1.01, 30.0)
     fun setMaxOrderUsdc(value: Double) = prefs.edit().putFloat(KEY_MAX_ORDER, value.coerceIn(1.01, 30.0).toFloat()).apply()
@@ -64,11 +89,15 @@ class AutoTradePolicyStore(context: Context) {
     fun canAutoCancel(proposal: CancelProposal): Decision {
         if (!enabled()) return Decision(false, "Auto-Trade désactivé")
         if (!allowCancelReplace()) return Decision(false, "Annulation/remplacement automatique désactivé")
+        if (cancelAutomationMode() != CancelAutomationMode.EXECUTION_ENABLED) {
+            return Decision(false, "ANALYSIS_ONLY : aucune annulation réelle autorisée")
+        }
+        if (!proposal.hasExplicitIntent) return Decision(false, "Intention CANCEL/REPLACE explicite requise")
         val createdAt = proposal.createdAt?.let { runCatching { Instant.parse(it).toEpochMilli() }.getOrNull() }
             ?: return Decision(false, "Date de proposition d'annulation absente")
-        val minimumCreatedAt = maxOf(armedAt(), cancelReplaceArmedAt())
+        val minimumCreatedAt = maxOf(armedAt(), cancelReplaceArmedAt(), cancelExecutionArmedAt())
         if (createdAt < minimumCreatedAt) {
-            return Decision(false, "Proposition d'annulation antérieure à l'autorisation Auto-Trade")
+            return Decision(false, "Proposition d'annulation antérieure à l'autorisation d'exécution")
         }
         if (!proposal.symbol.matches(Regex("^[A-Z0-9]{2,20}USDC$"))) {
             return Decision(false, "Annulation automatique limitée au Spot CRYPTO/USDC")
@@ -150,6 +179,8 @@ class AutoTradePolicyStore(context: Context) {
         private const val KEY_CHATGPT = "allow_chatgpt_proposals"
         private const val KEY_CANCEL_REPLACE = "allow_cancel_replace"
         private const val KEY_CANCEL_REPLACE_ARMED_AT = "cancel_replace_armed_at"
+        private const val KEY_CANCEL_MODE = "cancel_automation_mode"
+        private const val KEY_CANCEL_EXECUTION_ARMED_AT = "cancel_execution_armed_at"
         private const val KEY_MAX_ORDER = "max_order_usdc"
         private const val KEY_DAILY_CAP = "daily_cap_usdc"
         private const val KEY_MAX_ORDERS = "max_orders_per_day"
@@ -158,4 +189,3 @@ class AutoTradePolicyStore(context: Context) {
         private const val KEY_TODAY_ORDERS = "today_orders"
     }
 }
-

@@ -20,9 +20,9 @@ class AutoCancelExecutor(context: Context) {
     private val policy = AutoTradePolicyStore(app)
     private val journal = BotRuleStore(app)
 
-
     fun processEligiblePending(): Summary {
         if (!policy.enabled() || !policy.allowCancelReplace()) return Summary(0, 0, 0)
+        if (policy.cancelAutomationMode() != CancelAutomationMode.EXECUTION_ENABLED) return Summary(0, 0, 0)
         if (!running.compareAndSet(false, true)) return Summary(0, 0, 0)
         var checked = 0
         var executed = 0
@@ -42,7 +42,7 @@ class AutoCancelExecutor(context: Context) {
                         level = "ERROR",
                         category = "AUTO_CANCEL",
                         title = "Annulation auto non exécutée",
-                        detail = "${proposal.symbol} • ${proposal.targetOrderId} • ${e.message ?: e.javaClass.simpleName}",
+                        detail = "${proposal.intent} • ${proposal.symbol} • ${proposal.targetOrderId} • ${e.message ?: e.javaClass.simpleName}",
                         symbol = proposal.symbol
                     )
                 }
@@ -62,9 +62,23 @@ class AutoCancelExecutor(context: Context) {
         if (key.isBlank() || secret.isBlank()) throw IllegalStateException("Clés Bybit absentes")
 
         val claimed = cancelClient.claim(original.id)
+        // The claimed server row is the source of truth. Re-check mode, creation time and explicit
+        // CANCEL/REPLACE intent after the atomic claim and before the external side effect.
+        val claimedDecision = policy.canAutoCancel(claimed)
+        if (!claimedDecision.allowed) {
+            runCatching {
+                cancelClient.markResult(
+                    claimed.id,
+                    "error",
+                    JSONObject().put("error", claimedDecision.reason).put("autoCancel", false).put("analysisOnly", true)
+                )
+            }
+            throw IllegalStateException(claimedDecision.reason)
+        }
+
         return try {
             val result = BybitCancelClient(key, secret).cancel(claimed)
-            val markResponse = cancelClient.markResult(claimed.id, "executed", result.toJson())
+            val markResponse = cancelClient.markResult(claimed.id, "executed", result.toJson().put("intent", claimed.intent))
             val replacement = runCatching {
                 JSONObject(markResponse).optJSONObject("replacementProposal")
             }.getOrNull()
@@ -74,7 +88,7 @@ class AutoCancelExecutor(context: Context) {
                 category = "AUTO_CANCEL",
                 title = if (replacement != null) "Ordre annulé • remplacement préparé" else "Ordre annulé automatiquement",
                 detail = buildString {
-                    append("${claimed.symbol} • Order ID ${result.orderId} • Bybit ${result.orderStatus}")
+                    append("${claimed.intent} • ${claimed.symbol} • Order ID ${result.orderId} • Bybit ${result.orderStatus}")
                     replacement?.let {
                         append(" • remplacement ${it.optString("side")} ${it.optString("order_type")}")
                         val amount = it.optDouble("quote_amount_usdc", 0.0)
@@ -90,9 +104,9 @@ class AutoCancelExecutor(context: Context) {
                 urgent = false,
                 title = "Auto-Trade • ordre annulé",
                 body = if (replacement != null) {
-                    "${claimed.symbol} • annulation confirmée • remplacement transmis à Auto-Trade"
+                    "${claimed.symbol} • REPLACE explicite • annulation confirmée • remplacement transmis à Auto-Trade"
                 } else {
-                    "${claimed.symbol} • annulation confirmée par Bybit"
+                    "${claimed.symbol} • CANCEL explicite • annulation confirmée par Bybit"
                 }
             )
             result
@@ -101,14 +115,14 @@ class AutoCancelExecutor(context: Context) {
                 cancelClient.markResult(
                     claimed.id,
                     "error",
-                    JSONObject().put("error", error.message ?: error.toString()).put("autoCancel", true)
+                    JSONObject().put("error", error.message ?: error.toString()).put("autoCancel", true).put("intent", claimed.intent)
                 )
             }
             journal.addLog(
                 level = "ERROR",
                 category = "AUTO_CANCEL",
                 title = "Annulation automatique à vérifier",
-                detail = "${claimed.symbol} • ${claimed.targetOrderId} • ${error.message ?: error.javaClass.simpleName}",
+                detail = "${claimed.intent} • ${claimed.symbol} • ${claimed.targetOrderId} • ${error.message ?: error.javaClass.simpleName}",
                 symbol = claimed.symbol
             )
             notify(
@@ -166,4 +180,3 @@ class AutoCancelExecutor(context: Context) {
         private const val CHANNEL_ID = "chk_auto_trade"
     }
 }
-
