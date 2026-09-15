@@ -9,6 +9,7 @@ function out(status:number,data:any){return new Response(JSON.stringify(data),{s
 function fp(v:any){const s=String(v||"").trim();if(!/^[a-f0-9]{32,128}$/i.test(s))throw new Error("invalid_account_fingerprint");return s;}
 function sym(v:any){const s=String(v||"").trim().toUpperCase().replace(/[^A-Z0-9]/g,"").slice(0,30);if(!s.endsWith("USDC")||s==="USDCUSDC")throw new Error("invalid_symbol");return s;}
 function uuid(v:any){const s=String(v||"").trim();if(!/^[0-9a-f-]{36}$/i.test(s))throw new Error("invalid_id");return s;}
+function cancelIntent(v:any){const s=String(v||"").trim().toUpperCase();if(!["CANCEL","REPLACE"].includes(s))throw new Error("explicit_cancel_intent_required");return s;}
 async function deviceForAccount(sb:any,account:string){
   const {data,error}=await sb.from("chk_crypto_snapshots").select("device_id").eq("account_fingerprint",account).eq("exchange","BYBIT").order("updated_at",{ascending:false}).limit(1).maybeSingle();
   if(error)throw error;
@@ -53,14 +54,20 @@ Deno.serve(async(req:Request)=>{
     const {data,error}=await sb.from("chk_trade_proposals").insert(row).select("id,exchange,symbol,side,order_type,quote_amount_usdc,base_quantity,limit_price,rationale,confidence,source,status,expires_at,created_at,updated_at").single();if(error)throw error;return out(200,{ok:true,duplicate:false,proposal:data});
   }
   if(action==="list_cancel_proposals"){
-    const {data,error}=await sb.from("chk_cancel_proposals").select("id,exchange,symbol,target_order_id,target_order_link_id,rationale,confidence,status,expires_at,result,created_at,updated_at,executed_at,replacement_side,replacement_order_type,replacement_quote_amount_usdc,replacement_base_quantity,replacement_limit_price,replacement_rationale,replacement_confidence").eq("account_fingerprint",account).order("created_at",{ascending:false}).limit(Math.max(1,Math.min(100,Number(b?.limit||40))));if(error)throw error;return out(200,{ok:true,proposals:data||[]});
+    const {data,error}=await sb.from("chk_cancel_proposals").select("id,exchange,symbol,target_order_id,target_order_link_id,intent,rationale,confidence,status,expires_at,result,created_at,updated_at,executed_at,replacement_side,replacement_order_type,replacement_quote_amount_usdc,replacement_base_quantity,replacement_limit_price,replacement_rationale,replacement_confidence").eq("account_fingerprint",account).order("created_at",{ascending:false}).limit(Math.max(1,Math.min(100,Number(b?.limit||40))));if(error)throw error;return out(200,{ok:true,proposals:data||[]});
   }
   if(action==="create_cancel_proposal"){
-    const symbol=sym(b?.symbol),target=String(b?.targetOrderId||"").trim().slice(0,128);if(!target)return out(400,{error:"target_order_required"});
-    const replacementQuote=b?.replacementQuoteAmountUsdc==null?null:Number(b.replacementQuoteAmountUsdc);if(replacementQuote!=null&&(!Number.isFinite(replacementQuote)||replacementQuote<=1||replacementQuote>30))return out(400,{error:"invalid_replacement_amount"});
-    const {data:existing,error:ee}=await sb.from("chk_cancel_proposals").select("id,status,symbol,target_order_id,expires_at").eq("account_fingerprint",account).in("status",["pending","processing","executed"]).eq("target_order_id",target).order("created_at",{ascending:false}).limit(1).maybeSingle();if(ee)throw ee;if(existing)return out(200,{ok:true,duplicate:true,proposal:existing});
+    const symbol=sym(b?.symbol),target=String(b?.targetOrderId||"").trim().slice(0,128),intent=cancelIntent(b?.intent);if(!target)return out(400,{error:"target_order_required"});
+    const replacementQuote=b?.replacementQuoteAmountUsdc==null?null:Number(b.replacementQuoteAmountUsdc);
+    const replacementSide=b?.replacementSide?String(b.replacementSide).toUpperCase():null;
+    const replacementType=b?.replacementOrderType?String(b.replacementOrderType).toUpperCase():null;
+    const replacementPrice=b?.replacementLimitPrice==null?null:Number(b.replacementLimitPrice);
+    if(intent==="REPLACE"){
+      if(!["BUY","SELL"].includes(replacementSide)||replacementType!=="LIMIT"||replacementQuote==null||!Number.isFinite(replacementQuote)||replacementQuote<=1||replacementQuote>30||replacementPrice==null||!Number.isFinite(replacementPrice)||replacementPrice<=0)return out(400,{error:"invalid_replacement"});
+    }
+    const {data:existing,error:ee}=await sb.from("chk_cancel_proposals").select("id,status,symbol,target_order_id,intent,expires_at").eq("account_fingerprint",account).in("status",["pending","processing","executed"]).eq("target_order_id",target).eq("intent",intent).order("created_at",{ascending:false}).limit(1).maybeSingle();if(ee)throw ee;if(existing)return out(200,{ok:true,duplicate:true,proposal:existing});
     const expires=Math.max(5,Math.min(1440,Number(b?.expiresInMinutes||120)));
-    const row:any={account_fingerprint:account,exchange:"BYBIT",symbol,target_order_id:target,target_order_link_id:String(b?.targetOrderLinkId||"").trim().slice(0,128)||null,rationale:String(b?.rationale||"").trim().slice(0,4000),confidence:b?.confidence==null?null:Math.max(0,Math.min(99,Math.round(Number(b.confidence)))),status:"pending",expires_at:new Date(Date.now()+expires*60000).toISOString(),replacement_side:b?.replacementSide?String(b.replacementSide).toUpperCase():null,replacement_order_type:b?.replacementOrderType?String(b.replacementOrderType).toUpperCase():null,replacement_quote_amount_usdc:replacementQuote,replacement_base_quantity:b?.replacementBaseQuantity==null?null:Number(b.replacementBaseQuantity),replacement_limit_price:b?.replacementLimitPrice==null?null:Number(b.replacementLimitPrice),replacement_rationale:b?.replacementRationale?String(b.replacementRationale).slice(0,4000):null,replacement_confidence:b?.replacementConfidence==null?null:Math.max(0,Math.min(99,Math.round(Number(b.replacementConfidence))))};
+    const row:any={account_fingerprint:account,exchange:"BYBIT",symbol,target_order_id:target,target_order_link_id:String(b?.targetOrderLinkId||"").trim().slice(0,128)||null,intent,rationale:String(b?.rationale||"").trim().slice(0,4000),confidence:b?.confidence==null?null:Math.max(0,Math.min(99,Math.round(Number(b.confidence)))),status:"pending",expires_at:new Date(Date.now()+expires*60000).toISOString(),replacement_side:intent==="REPLACE"?replacementSide:null,replacement_order_type:intent==="REPLACE"?replacementType:null,replacement_quote_amount_usdc:intent==="REPLACE"?replacementQuote:null,replacement_base_quantity:intent==="REPLACE"&&b?.replacementBaseQuantity!=null?Number(b.replacementBaseQuantity):null,replacement_limit_price:intent==="REPLACE"?replacementPrice:null,replacement_rationale:intent==="REPLACE"&&b?.replacementRationale?String(b.replacementRationale).slice(0,4000):null,replacement_confidence:intent==="REPLACE"&&b?.replacementConfidence!=null?Math.max(0,Math.min(99,Math.round(Number(b.replacementConfidence)))):null};
     const {data,error}=await sb.from("chk_cancel_proposals").insert(row).select().single();if(error)throw error;return out(200,{ok:true,duplicate:false,proposal:data});
   }
 
@@ -87,5 +94,5 @@ Deno.serve(async(req:Request)=>{
   }
 
   return out(400,{error:"unknown_action"});
- }catch(e){console.error("chk-mcp-bridge",e);const message=String(e?.message||e).slice(0,180);const invalid=/^(invalid_|batch_id_conflict|proposal_not_found)/.test(message);return out(invalid?400:503,{error:invalid?message:"bridge_unavailable",message,retryable:!invalid});}
+ }catch(e){console.error("chk-mcp-bridge",e);const message=String(e?.message||e).slice(0,180);const invalid=/^(invalid_|batch_id_conflict|proposal_not_found|explicit_cancel_intent_required)/.test(message);return out(invalid?400:503,{error:invalid?message:"bridge_unavailable",message,retryable:!invalid});}
 });
