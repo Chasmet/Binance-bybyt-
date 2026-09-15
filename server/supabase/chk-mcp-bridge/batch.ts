@@ -25,7 +25,7 @@ export function summarize(ids: string[], rows: any[], now = Date.now()) {
       row.status === 'executed' && row.bybit_order_id ? 'PLACED' :
       row.status === 'error' ? 'FAILED' : row.status === 'rejected' ? 'REJECTED' :
       row.status === 'processing' ? 'PLACED' : 'PENDING';
-    const confirmed = row.status === "executed" && !!row.bybit_order_id && ['OPEN','PARTIAL','FILLED','CANCELLED'].includes(lifecycleStatus);
+    const confirmed = row.status === "executed" && !!row.bybit_order_id && ['OPEN','PARTIAL','FILLED'].includes(lifecycleStatus);
     const expired = row.status === "pending" && Date.parse(row.expires_at) <= now;
     const blocked = row.status === "pending" && row.result?.blocked;
     const state = expired ? 'EXPIRED' : blocked ? 'BLOCKED' : lifecycleStatus;
