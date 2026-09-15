@@ -54,7 +54,7 @@ data class TrackingPowerProfile(
                 maintenanceSleepMs = 5_000L,
                 freshnessMs = 12_000L,
                 wakeLockTimeoutMs = 10 * 60_000L,
-                maxTrackedAssets = 10
+                maxTrackedAssets = 5
             )
             TrackingPowerMode.BALANCED -> TrackingPowerProfile(
                 mode = mode,
@@ -73,7 +73,7 @@ data class TrackingPowerProfile(
                 maintenanceSleepMs = 3_000L,
                 freshnessMs = 6_000L,
                 wakeLockTimeoutMs = 10 * 60_000L,
-                maxTrackedAssets = 18
+                maxTrackedAssets = 8
             )
             TrackingPowerMode.PERFORMANCE -> TrackingPowerProfile(
                 mode = mode,
@@ -92,7 +92,7 @@ data class TrackingPowerProfile(
                 maintenanceSleepMs = 1_500L,
                 freshnessMs = 3_500L,
                 wakeLockTimeoutMs = 10 * 60_000L,
-                maxTrackedAssets = 30
+                maxTrackedAssets = 12
             )
         }
     }
