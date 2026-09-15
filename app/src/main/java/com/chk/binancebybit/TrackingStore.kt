@@ -13,7 +13,7 @@ import kotlin.math.max
 /**
  * Local-first persistence for Wall Tracker.
  * Raw order-book traffic never leaves the phone and is not persisted. Only useful wall events,
- * wall-related trades, cross-exchange matches, connection gaps and user notes are stored.
+ * aggregated wall-related trades, cross-exchange matches, connection gaps and user notes are stored.
  */
 data class TrackingWall(
     val id: String,
@@ -36,7 +36,11 @@ data class TrackingWall(
     val singleActorProbability: Int,
     val multiTraderProbability: Int,
     val indeterminateProbability: Int,
-    val lastEvent: String
+    val lastEvent: String,
+    val fingerprintId: String = "",
+    val fingerprintConfidence: Int = 0,
+    val reappearances: Int = 0,
+    val spoofingProbability: Int = 0
 ) {
     fun toJson(now: Long = System.currentTimeMillis()): JSONObject = JSONObject().apply {
         put("id", id)
@@ -46,6 +50,7 @@ data class TrackingWall(
         put("side", side)
         put("firstSeen", firstSeen)
         put("lastSeen", lastSeen)
+        put("durationMs", max(0L, lastSeen - firstSeen))
         put("ageMs", max(0L, now - firstSeen))
         put("initialPrice", initialPrice)
         put("price", currentPrice)
@@ -61,6 +66,16 @@ data class TrackingWall(
         put("multiTraderProbability", multiTraderProbability)
         put("indeterminateProbability", indeterminateProbability)
         put("lastEvent", lastEvent)
+        put("fingerprintId", fingerprintId.ifBlank { JSONObject.NULL })
+        put("fingerprintConfidence", fingerprintConfidence)
+        put("reappearances", reappearances)
+        put("spoofingProbability", spoofingProbability)
+        put("spoofingLabel", when {
+            spoofingProbability >= 75 -> "SPOOFING_PROBABLE"
+            spoofingProbability >= 55 -> "SPOOFING_POSSIBLE"
+            else -> "NO_STRONG_SPOOFING_SIGNAL"
+        })
+        put("institutionalAttribution", "UNPROVEN")
     }
 }
 
@@ -115,11 +130,16 @@ class TrackingStore(context: Context) : SQLiteOpenHelper(
               single_score INTEGER NOT NULL DEFAULT 0,
               multi_score INTEGER NOT NULL DEFAULT 0,
               indeterminate_score INTEGER NOT NULL DEFAULT 100,
-              last_event TEXT NOT NULL DEFAULT ''
+              last_event TEXT NOT NULL DEFAULT '',
+              fingerprint_id TEXT NOT NULL DEFAULT '',
+              fingerprint_confidence INTEGER NOT NULL DEFAULT 0,
+              reappearances INTEGER NOT NULL DEFAULT 0,
+              spoofing_probability INTEGER NOT NULL DEFAULT 0
             )
         """.trimIndent())
         db.execSQL("CREATE INDEX idx_walls_active ON walls(status,last_seen)")
         db.execSQL("CREATE INDEX idx_walls_asset ON walls(asset,last_seen)")
+        db.execSQL("CREATE INDEX idx_walls_fingerprint ON walls(fingerprint_id,last_seen)")
         db.execSQL("""
             CREATE TABLE wall_events(
               seq INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -188,11 +208,26 @@ class TrackingStore(context: Context) : SQLiteOpenHelper(
     }
 
     override fun onUpgrade(db: SQLiteDatabase, oldVersion: Int, newVersion: Int) {
-        // First version of the dedicated tracking DB. Future migrations remain additive.
+        if (oldVersion < 2) {
+            addColumn(db, "ALTER TABLE walls ADD COLUMN fingerprint_id TEXT NOT NULL DEFAULT ''")
+            addColumn(db, "ALTER TABLE walls ADD COLUMN fingerprint_confidence INTEGER NOT NULL DEFAULT 0")
+            addColumn(db, "ALTER TABLE walls ADD COLUMN reappearances INTEGER NOT NULL DEFAULT 0")
+            addColumn(db, "ALTER TABLE walls ADD COLUMN spoofing_probability INTEGER NOT NULL DEFAULT 0")
+            runCatching { db.execSQL("CREATE INDEX IF NOT EXISTS idx_walls_fingerprint ON walls(fingerprint_id,last_seen)") }
+        }
+    }
+
+    private fun addColumn(db: SQLiteDatabase, sql: String) {
+        runCatching { db.execSQL(sql) }
     }
 
     fun enabled(): Boolean = prefs.getBoolean("enabled", true)
     fun setEnabled(value: Boolean) = prefs.edit().putBoolean("enabled", value).apply()
+
+    fun powerMode(): TrackingPowerMode = TrackingPowerMode.parse(prefs.getString("power_mode", TrackingPowerMode.BALANCED.name))
+    fun powerProfile(): TrackingPowerProfile = TrackingPowerProfile.of(powerMode())
+    fun setPowerMode(mode: TrackingPowerMode) = prefs.edit().putString("power_mode", mode.name).apply()
+
     fun minWallNotional(): Double = prefs.getFloat("min_wall_notional", 5_000f).toDouble().coerceIn(250.0, 1_000_000.0)
     fun minWallStrength(): Double = prefs.getFloat("min_wall_strength", 4f).toDouble().coerceIn(1.5, 50.0)
     fun setMinWallNotional(value: Double) = prefs.edit().putFloat("min_wall_notional", value.coerceIn(250.0, 1_000_000.0).toFloat()).apply()
@@ -200,7 +235,7 @@ class TrackingStore(context: Context) : SQLiteOpenHelper(
     fun lastRemotePushAt(): Long = prefs.getLong("last_remote_push_at", 0L)
     fun setLastRemotePushAt(value: Long) = prefs.edit().putLong("last_remote_push_at", value).apply()
 
-    /** Only non-stable assets actually present in either cached portfolio are tracked. */
+    /** Non-stable assets actually present in either cached portfolio. */
     fun heldAssets(): Set<String> {
         val out = linkedSetOf<String>()
         listOf("BINANCE" to "v4_snapshot_binance", "BYBIT" to "v4_snapshot_bybit").forEach { (exchange, key) ->
@@ -208,11 +243,12 @@ class TrackingStore(context: Context) : SQLiteOpenHelper(
                 ?: if (exchange == "BINANCE") workspace.getString("last_snapshot", null) else workspace.getString("bybit_last_snapshot", null)
                 ?: return@forEach
             runCatching {
-                val a = JSONObject(raw).optJSONArray("holdings") ?: JSONArray()
+                val root = JSONObject(raw)
+                val a = root.optJSONArray("holdings") ?: root.optJSONArray("assets") ?: JSONArray()
                 for (i in 0 until a.length()) {
                     val h = a.optJSONObject(i) ?: continue
                     val asset = h.optString("asset").uppercase(Locale.US).trim()
-                    val amount = h.optDouble("amount", 0.0)
+                    val amount = h.optDouble("amount", h.optDouble("free", 0.0))
                     if (amount > 0.0 && asset.matches(Regex("^[A-Z0-9]{2,16}$")) && asset !in STABLES) out += asset
                 }
             }
@@ -227,7 +263,8 @@ class TrackingStore(context: Context) : SQLiteOpenHelper(
             put("initial_qty", w.initialQty); put("current_qty", w.currentQty); put("executed_qty", w.executedQty); put("cancelled_qty", w.cancelledQty)
             put("strength", w.strength); put("moves", w.moves); put("replenishments", w.replenishments); put("status", w.status)
             put("single_score", w.singleActorProbability); put("multi_score", w.multiTraderProbability); put("indeterminate_score", w.indeterminateProbability)
-            put("last_event", w.lastEvent)
+            put("last_event", w.lastEvent); put("fingerprint_id", w.fingerprintId); put("fingerprint_confidence", w.fingerprintConfidence)
+            put("reappearances", w.reappearances); put("spoofing_probability", w.spoofingProbability)
         }, SQLiteDatabase.CONFLICT_REPLACE)
     }
 
@@ -238,6 +275,7 @@ class TrackingStore(context: Context) : SQLiteOpenHelper(
         })
     }
 
+    /** Aggregated trade sample only; never one SQLite write per WebSocket trade. */
     fun wallTrade(w: TrackingWall, price: Double, qty: Double, at: Long) {
         writableDatabase.insert("wall_trades", null, ContentValues().apply {
             put("wall_id", w.id); put("exchange", w.exchange); put("symbol", w.symbol); put("side", w.side)
@@ -251,6 +289,11 @@ class TrackingStore(context: Context) : SQLiteOpenHelper(
             put("side", a.side); put("quantity_similarity", qtySimilarity); put("price_similarity", priceSimilarity); put("score", score); put("at", at)
         })
     }
+
+    fun recentClosedWalls(asset: String, exchange: String, side: String, since: Long, limit: Int = 24): List<TrackingWall> = readableDatabase.rawQuery(
+        "SELECT * FROM walls WHERE asset=? AND exchange=? AND side=? AND status<>'ACTIVE' AND last_seen>=? ORDER BY last_seen DESC LIMIT ?",
+        arrayOf(asset, exchange, side, since.toString(), limit.coerceIn(1, 100).toString())
+    ).use { c -> buildList { while (c.moveToNext()) add(wallFrom(c)) } }
 
     fun openGap(reason: String): Long {
         val last = readableDatabase.rawQuery("SELECT seq FROM connection_gaps WHERE ended_at=0 ORDER BY seq DESC LIMIT 1", null).use { c -> if (c.moveToFirst()) c.getLong(0) else 0L }
@@ -339,12 +382,21 @@ class TrackingStore(context: Context) : SQLiteOpenHelper(
 
     private fun wallFrom(c: Cursor): TrackingWall {
         fun i(name: String) = c.getColumnIndexOrThrow(name)
+        fun optionalInt(name: String): Int {
+            val index = c.getColumnIndex(name)
+            return if (index >= 0) c.getInt(index) else 0
+        }
+        fun optionalString(name: String): String {
+            val index = c.getColumnIndex(name)
+            return if (index >= 0) c.getString(index).orEmpty() else ""
+        }
         return TrackingWall(
             c.getString(i("id")), c.getString(i("asset")), c.getString(i("exchange")), c.getString(i("symbol")), c.getString(i("side")),
             c.getLong(i("first_seen")), c.getLong(i("last_seen")), c.getDouble(i("initial_price")), c.getDouble(i("current_price")),
             c.getDouble(i("initial_qty")), c.getDouble(i("current_qty")), c.getDouble(i("executed_qty")), c.getDouble(i("cancelled_qty")),
             c.getDouble(i("strength")), c.getInt(i("moves")), c.getInt(i("replenishments")), c.getString(i("status")),
-            c.getInt(i("single_score")), c.getInt(i("multi_score")), c.getInt(i("indeterminate_score")), c.getString(i("last_event"))
+            c.getInt(i("single_score")), c.getInt(i("multi_score")), c.getInt(i("indeterminate_score")), c.getString(i("last_event")),
+            optionalString("fingerprint_id"), optionalInt("fingerprint_confidence"), optionalInt("reappearances"), optionalInt("spoofing_probability")
         )
     }
 
@@ -352,7 +404,7 @@ class TrackingStore(context: Context) : SQLiteOpenHelper(
 
     companion object {
         private const val DB_NAME = "chk_tracking.db"
-        private const val DB_VERSION = 1
+        private const val DB_VERSION = 2
         private const val PREFS = "chk_tracking_settings"
         private val STABLES = setOf("USDC", "USDT", "USD", "EUR", "FDUSD", "TUSD", "DAI", "USDE", "EURC")
     }
