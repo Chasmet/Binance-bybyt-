@@ -27,16 +27,16 @@ test('five confirmed placements are required for success',()=>{
  assert.equal(summarize(ids,placed.slice(0,1)).allConfirmed,false);
  assert.equal(summarize(ids,placed.slice(0,1)).pending,4);
 });
-test('SENT, missing order ID, rejected and cancelled are never placements',()=>{
+test('SENT, missing order ID, rejected and cancelled are never confirmed placements',()=>{
  for(const result of [{orderStatus:'SENT'},{orderStatus:'Rejected'},{orderStatus:'Cancelled'}])
   assert.equal(summarize([ids[0]],[{...placed[0],result}]).allConfirmed,false);
  assert.equal(summarize([ids[0]],[{...placed[0],bybit_order_id:''}]).allConfirmed,false);
 });
-test('reports blocked, expired and processing individually',()=>{
+test('reports blocked, expired and processing with canonical states',()=>{
  const rows=[{id:ids[0],status:'pending',result:{blocked:true,reason:'daily_cap'}},
  {id:ids[1],status:'pending',expires_at:'2000-01-01'}, {id:ids[2],status:'processing'}];
  const r=summarize(ids.slice(0,3),rows);
- assert.deepEqual(r.orders.map(x=>x.state),['blocked','expired','processing']);assert.equal(r.pending,1);
+ assert.deepEqual(r.orders.map(x=>x.state),['BLOCKED','EXPIRED','PLACED']);assert.equal(r.pending,1);
 });
 test('wait cannot read another account and timeout is not success',async()=>{
  const db=mock(placed.map(x=>({...x,account_fingerprint:'other'})));
@@ -63,4 +63,3 @@ test('MCP adapter requires follow-up for incomplete batches',async()=>{
  assert.match(r.content[0].text,/Continuer wait_trade_batch/);
  assert.equal(batchTools[0].inputSchema.properties.orders.items.properties.quoteAmountUsdc.maximum,600);
 });
-
