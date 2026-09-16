@@ -60,10 +60,13 @@ class TrackingSocketManager(
     private var bybitSocket: WebSocket? = null
     private var binanceReconnect: ScheduledFuture<*>? = null
     private var bybitReconnect: ScheduledFuture<*>? = null
+    private var bybitHeartbeat: ScheduledFuture<*>? = null
     private var binanceFailures = 0
     private var bybitFailures = 0
     private var binanceEndpoint = 0
     private var bybitEndpoint = 0
+    private var bybitSubscribeExpected = 0
+    private var bybitSubscribeAccepted = 0
 
     private val bybitBooks = ConcurrentHashMap<String, MutableBook>()
     private val quotes = ConcurrentHashMap<String, MutableQuote>()
@@ -109,6 +112,7 @@ class TrackingSocketManager(
         if (stopped.getAndSet(true)) return
         binanceReconnect?.cancel(false); binanceReconnect = null
         bybitReconnect?.cancel(false); bybitReconnect = null
+        bybitHeartbeat?.cancel(false); bybitHeartbeat = null
         bookTasks.values.forEach { it.cancel(false) }; bookTasks.clear()
         quoteTasks.values.forEach { it.cancel(false) }; quoteTasks.clear()
         tradeTasks.values.forEach { it.cancel(false) }; tradeTasks.clear()
@@ -122,6 +126,7 @@ class TrackingSocketManager(
 
     private fun reconnectAll(reason: String) {
         binanceReconnect?.cancel(false); bybitReconnect?.cancel(false)
+        bybitHeartbeat?.cancel(false); bybitHeartbeat = null
         binanceSocket?.close(1000, reason); bybitSocket?.close(1000, reason)
         binanceSocket = null; bybitSocket = null
         scheduler.schedule({ if (!stopped.get()) connectBinance() }, 350, TimeUnit.MILLISECONDS)
@@ -218,23 +223,37 @@ class TrackingSocketManager(
         bybitSocket = client.newWebSocket(Request.Builder().url(endpoint).build(), object : WebSocketListener() {
             override fun onOpen(webSocket: WebSocket, response: Response) {
                 bybitFailures = 0
-                listener.onConnection("BYBIT", true, "$endpoint • transport connecté • feed en chauffe")
-                val args = JSONArray()
-                bybitSymbols.sorted().forEach { symbol ->
-                    args.put("orderbook.50.$symbol")
-                    args.put("publicTrade.$symbol")
-                    args.put("tickers.$symbol")
+                bybitSubscribeAccepted = 0
+                val batches = BybitSubscriptionPlanner.batches(bybitSymbols)
+                bybitSubscribeExpected = batches.size
+                listener.onConnection(
+                    "BYBIT",
+                    true,
+                    "$endpoint • transport connecté • ${bybitSymbols.size} paire(s) • ${batches.size} lot(s) de souscription • feed en chauffe"
+                )
+                batches.forEachIndexed { index, topics ->
+                    val args = JSONArray().apply { topics.forEach { put(it) } }
+                    val sent = webSocket.send(JSONObject().apply {
+                        put("req_id", "chk-track-${System.currentTimeMillis()}-${index + 1}")
+                        put("op", "subscribe")
+                        put("args", args)
+                    }.toString())
+                    if (!sent) {
+                        listener.onConnection("BYBIT", true, "transport connecté • échec envoi souscription lot ${index + 1}/${batches.size}")
+                    }
                 }
-                webSocket.send(JSONObject().apply { put("op", "subscribe"); put("args", args) }.toString())
+                startBybitHeartbeat(webSocket)
             }
 
             override fun onMessage(webSocket: WebSocket, text: String) = handleBybit(text)
             override fun onClosing(webSocket: WebSocket, code: Int, reason: String) { webSocket.close(code, reason) }
             override fun onClosed(webSocket: WebSocket, code: Int, reason: String) {
+                bybitHeartbeat?.cancel(false); bybitHeartbeat = null
                 listener.onConnection("BYBIT", false, "$code • $reason")
                 scheduleBybitReconnect()
             }
             override fun onFailure(webSocket: WebSocket, t: Throwable, response: Response?) {
+                bybitHeartbeat?.cancel(false); bybitHeartbeat = null
                 listener.onConnection("BYBIT", false, t.message ?: "WebSocket Bybit indisponible")
                 if (bybitEndpoint < BYBIT_ENDPOINTS.lastIndex) bybitEndpoint++
                 scheduleBybitReconnect()
@@ -242,9 +261,43 @@ class TrackingSocketManager(
         })
     }
 
+    private fun startBybitHeartbeat(webSocket: WebSocket) {
+        bybitHeartbeat?.cancel(false)
+        if (scheduler.isShutdown) return
+        bybitHeartbeat = scheduler.scheduleAtFixedRate({
+            if (!stopped.get() && webSocket === bybitSocket) {
+                webSocket.send(JSONObject().apply {
+                    put("req_id", "chk-heartbeat")
+                    put("op", "ping")
+                }.toString())
+            }
+        }, 20, 20, TimeUnit.SECONDS)
+    }
+
     private fun handleBybit(text: String) {
         val root = runCatching { JSONObject(text) }.getOrNull() ?: return
-        if (root.optString("op").equals("pong", true)) return
+        val op = root.optString("op")
+        if (op.equals("pong", true) || (op.equals("ping", true) && root.optString("ret_msg").equals("pong", true))) return
+        if (op.equals("subscribe", true)) {
+            val success = root.optBoolean("success", false)
+            val reqId = root.optString("req_id")
+            val msg = root.optString("ret_msg")
+            if (success) {
+                bybitSubscribeAccepted = (bybitSubscribeAccepted + 1).coerceAtMost(bybitSubscribeExpected)
+                listener.onConnection(
+                    "BYBIT",
+                    true,
+                    "transport connecté • souscription ${bybitSubscribeAccepted}/${bybitSubscribeExpected} acceptée${if (reqId.isNotBlank()) " • $reqId" else ""} • feed en chauffe"
+                )
+            } else {
+                listener.onConnection(
+                    "BYBIT",
+                    true,
+                    "transport connecté • souscription refusée${if (reqId.isNotBlank()) " • $reqId" else ""}${if (msg.isNotBlank()) " • $msg" else ""}"
+                )
+            }
+            return
+        }
         val topic = root.optString("topic")
         if (topic.isBlank()) return
         when {
@@ -281,8 +334,8 @@ class TrackingSocketManager(
                 val d = when (raw) { is JSONObject -> raw; is JSONArray -> raw.optJSONObject(0); else -> null } ?: return
                 val symbol = d.optString("symbol", topic.substringAfterLast('.')).uppercase(Locale.US)
                 val ts = root.optLong("ts", System.currentTimeMillis())
-                // Bybit sends ticker deltas. Missing fields must keep the previous values instead of
-                // turning price/bid/ask into null.
+                // Bybit can send ticker deltas. Missing fields keep their previous values so that
+                // last/bid/ask never fall back to null while the feed is connected.
                 updateQuote(
                     "BYBIT",
                     symbol,
