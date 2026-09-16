@@ -16,6 +16,7 @@ jobs:
     runs-on: ubuntu-latest
     env:
       HAS_STABLE_SIGNING: ${{ github.event_name != 'pull_request' && github.ref == 'refs/heads/main' }}
+      CHK_STABLE_CERT_SHA256: 1dda4bb6e329370bcbb9d82470921cd677fd96db138b4d9c522105df06111217
 
     steps:
       - name: Checkout
@@ -78,16 +79,31 @@ jobs:
         if: env.HAS_STABLE_SIGNING == 'true'
         run: gradle :app:assembleRelease --stacktrace
 
-      - name: Verify stable APK signature
+      - name: Verify and pin stable APK signature
         if: env.HAS_STABLE_SIGNING == 'true'
         shell: bash
         run: |
           set -euo pipefail
           APK="app/build/outputs/apk/release/app-release.apk"
+          CERT_REPORT="$RUNNER_TEMP/chk-crypto-signing-certificate.txt"
           test -f "$APK"
           APKSIGNER="$(find "$ANDROID_HOME/build-tools" -type f -name apksigner | sort -V | tail -n 1)"
           test -n "$APKSIGNER"
-          "$APKSIGNER" verify --verbose --print-certs "$APK" | tee "$RUNNER_TEMP/chk-crypto-signing-certificate.txt"
+          "$APKSIGNER" verify --verbose --print-certs "$APK" | tee "$CERT_REPORT"
+
+          ACTUAL_CERT_SHA256="$(sed -n \
+            -e 's/^Signer #1 certificate SHA-256 digest: //p' \
+            -e 's/^V2 Signer: certificate SHA-256 digest: //p' \
+            "$CERT_REPORT" | head -n 1 | tr -d '[:space:]' | tr 'A-F' 'a-f')"
+          if [ -z "$ACTUAL_CERT_SHA256" ]; then
+            echo "::error::Impossible de lire l'empreinte de signature de l'APK stable"
+            exit 1
+          fi
+          if [ "$ACTUAL_CERT_SHA256" != "$CHK_STABLE_CERT_SHA256" ]; then
+            echo "::error::SIGNATURE REFUSÉE. Empreinte CHK stable attendue: $CHK_STABLE_CERT_SHA256 ; reçue: $ACTUAL_CERT_SHA256"
+            exit 1
+          fi
+          echo "Signature CHK Crypto stable vérifiée: $ACTUAL_CERT_SHA256"
 
       - name: Resolve release metadata
         if: env.HAS_STABLE_SIGNING == 'true'
@@ -143,15 +159,31 @@ jobs:
               --latest
           fi
 
-      - name: Build debug APK for pull request validation
+      - name: Build isolated DEV APK for pull request validation
         if: env.HAS_STABLE_SIGNING != 'true'
         run: gradle :app:assembleDebug --stacktrace
 
-      - name: Upload debug validation APK
+      - name: Verify DEV package is isolated from production
+        if: env.HAS_STABLE_SIGNING != 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+          APK="app/build/outputs/apk/debug/app-debug.apk"
+          test -f "$APK"
+          AAPT="$(find "$ANDROID_HOME/build-tools" -type f -name aapt | sort -V | tail -n 1)"
+          test -n "$AAPT"
+          PACKAGE_NAME="$("$AAPT" dump badging "$APK" | sed -n "s/^package: name='\([^']*\)'.*/\1/p" | head -n 1)"
+          if [ "$PACKAGE_NAME" != "com.chk.binancebybit.dev" ]; then
+            echo "::error::L'APK DEV utilise un mauvais package: $PACKAGE_NAME"
+            exit 1
+          fi
+          echo "APK DEV isolée: $PACKAGE_NAME"
+
+      - name: Upload isolated DEV validation APK
         if: env.HAS_STABLE_SIGNING != 'true'
         uses: actions/upload-artifact@v4
         with:
-          name: CHK-Crypto-debug-validation
+          name: CHK-Crypto-DEV-validation-${{ github.sha }}
           path: app/build/outputs/apk/debug/app-debug.apk
           if-no-files-found: error
           retention-days: 7
