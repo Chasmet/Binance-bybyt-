@@ -35,8 +35,8 @@ android {
         applicationId = "com.chk.binancebybit"
         minSdk = 26
         targetSdk = 35
-        versionCode = 39
-        versionName = "0.11.2"
+        versionCode = 40
+        versionName = "0.11.3"
     }
 
     signingConfigs {
@@ -51,6 +51,12 @@ android {
     }
 
     buildTypes {
+        debug {
+            // A debug/PR APK must never be installable over the production package.
+            // Hosted CI runners use a debug signing key that is not the CHK stable key.
+            applicationIdSuffix = ".dev"
+            versionNameSuffix = "-dev"
+        }
         release {
             isMinifyEnabled = false
             signingConfig = signingConfigs.findByName("stableRelease")
@@ -73,4 +79,3 @@ dependencies {
     testImplementation("org.robolectric:robolectric:4.16")
     implementation("com.squareup.okhttp3:okhttp:4.12.0")
 }
-
