@@ -1,6 +1,10 @@
 package com.chk.binancebybit;
 
 import android.content.Context;
+import android.app.job.JobInfo;
+import android.app.job.JobScheduler;
+import android.content.ComponentName;
+import android.os.Build;
 import android.content.SharedPreferences;
 import org.json.JSONArray;
 import org.json.JSONObject;
@@ -54,6 +58,12 @@ public final class CryptoUniversalAgent {
                 .put("description", "Portefeuille local mis en cache, jamais les identifiants API"));
         caps.put(new JSONObject().put("name", "crypto_tracking").put("readOnly", true)
                 .put("description", "État du suivi crypto local"));
+        caps.put(new JSONObject().put("name", "crypto_chart_state").put("readOnly", true)
+                .put("description", "Lecture du graphique CHK Crypto actuel"));
+        caps.put(new JSONObject().put("name", "crypto_device_status").put("readOnly", true)
+                .put("description", "Etat de la connexion et de l'agent Android"));
+        caps.put(new JSONObject().put("name", "crypto_chart_control").put("readOnly", false)
+                .put("description", "Pilotage non financier du graphique soumis à approbation locale"));
         payload.put("capabilities", caps);
         JSONObject result = request("POST", "/api/onboard", payload, "");
         String id = result.optString("id", "");
@@ -63,6 +73,7 @@ public final class CryptoUniversalAgent {
         new SecureStore(context).put(SECRET, secret);
         prefs(context).edit().putString(APP_ID, id).putBoolean("active", true)
                 .remove("last_error").apply();
+        scheduleBackground(context);
         start(context);
     }
 
@@ -70,6 +81,8 @@ public final class CryptoUniversalAgent {
         prefs(context).edit().remove(APP_ID).putBoolean("active", false)
                 .remove("last_error").apply();
         new SecureStore(context).put(SECRET, "");
+        JobScheduler scheduler=(JobScheduler)context.getSystemService(Context.JOB_SCHEDULER_SERVICE);
+        if(scheduler!=null)scheduler.cancel(9861);
         // Registration on the PC persists: server-side revoke if device is lost.
     }
 
@@ -98,16 +111,34 @@ public final class CryptoUniversalAgent {
 
     public static void checkNow(Context context) {
         Context app = context.getApplicationContext();
-        new Thread(() -> {
-            if (!paired(app)) return;
-            try {
-                pollOnce(app);
-                prefs(app).edit().putLong("last_contact", System.currentTimeMillis())
-                        .remove("last_error").apply();
-            } catch (Exception e) {
-                prefs(app).edit().putString("last_error", "connexion ou réseau").apply();
-            }
-        }, "CHK-Crypto-MCP-Check").start();
+        new Thread(() -> runOnce(app), "CHK-Crypto-MCP-Check").start();
+    }
+    static void runOnce(Context app) {
+        if (!paired(app)) return;
+        try {
+            pollOnce(app);
+            prefs(app).edit().putLong("last_contact", System.currentTimeMillis())
+                    .remove("last_error").apply();
+        } catch (Exception e) {
+            prefs(app).edit().putString("last_error", "connexion ou réseau").apply();
+        }
+    }
+    /**
+     * Android JobScheduler is opportunistic: no exact 24/7 guarantee. The
+     * foreground Tracking service keeps the app process alive when enabled.
+     */
+    public static void scheduleBackground(Context context) {
+        if (!paired(context)) return;
+        try {
+            JobScheduler scheduler=(JobScheduler)context.getSystemService(Context.JOB_SCHEDULER_SERVICE);
+            if(scheduler==null)return;
+            JobInfo job=new JobInfo.Builder(9861,new ComponentName(context,CryptoUniversalJobService.class))
+                    .setRequiredNetworkType(JobInfo.NETWORK_TYPE_ANY)
+                    .setPersisted(true)
+                    .setPeriodic(15L*60*1000)
+                    .build();
+            scheduler.schedule(job);
+        }catch(Exception ignored) { /* Background limits are not fatal */ }
     }
 
     private static void pollOnce(Context context) throws Exception {
@@ -122,6 +153,9 @@ public final class CryptoUniversalAgent {
         // An agent cannot execute trades even if a malicious job is enqueued.
         if ("crypto_portfolio".equals(action)) result = portfolio(context);
         else if ("crypto_tracking".equals(action)) result = tracking(context);
+        else if ("crypto_chart_state".equals(action)) result = chartState(context);
+        else if ("crypto_device_status".equals(action)) result = deviceStatus(context);
+        else if ("crypto_chart_control".equals(action)) result = chartControl(context,job.optJSONObject("args"));
         else result = new JSONObject().put("ok", false).put("error", "read_only_action_not_allowed");
         JSONObject reply = new JSONObject().put("task_id", job.optString("id")).put("result", result);
         request("POST", "/api/agent/" + id + "/result", reply, secret);
@@ -166,6 +200,75 @@ public final class CryptoUniversalAgent {
                 .put("binance_connected", p.getBoolean("binance_connected", false))
                 .put("bybit_connected", p.getBoolean("bybit_connected", false))
                 .put("capturedAt", System.currentTimeMillis());
+    }
+
+    private static JSONObject chartState(Context context) throws Exception {
+        ChartStateStore store = new ChartStateStore(context);
+        JSONObject state = store.loadCurrent().toJson();
+        return new JSONObject().put("ok", true).put("read_only", true)
+                .put("state", state).put("source", "actual_android_chart_preferences")
+                .put("capturedAt", System.currentTimeMillis());
+    }
+    private static JSONObject deviceStatus(Context context) throws Exception {
+        return new JSONObject().put("ok", true).put("paired", paired(context))
+                .put("agent", status(context)).put("appPackage", context.getPackageName())
+                .put("active_when_process_running", true)
+                .put("periodic_job_minutes", 15)
+                .put("trading_permission", false);
+    }
+    private static JSONObject chartControl(Context context, JSONObject request) throws Exception {
+        if(request==null)throw new IllegalArgumentException("chart_command_missing");
+        String action=request.optString("action","");
+        JSONObject args=request.optJSONObject("args");
+        if(args==null)args=new JSONObject();
+        // Only whitelist display/chart actions. Never take account, trading,
+        // WebView JS, arbitrary shell, arbitrary URL, or API key parameters.
+        ChartStateStore store=new ChartStateStore(context);
+        JSONObject chart=store.loadCurrent().toJson();
+        JSONObject viewport=chart.optJSONObject("viewport");
+        if(viewport==null)viewport=new JSONObject();
+        switch(action){
+            case "set_symbol": {
+                String symbol=args.optString("symbol","").toUpperCase(java.util.Locale.US).replace("/","");
+                if(!symbol.matches("[A-Z0-9]{4,32}"))throw new IllegalArgumentException("invalid_symbol");
+                chart.put("symbol",symbol);
+                break;
+            }
+            case "set_timeframe": {
+                String tf=args.optString("timeframe","");
+                if(!java.util.Arrays.asList("1m","3m","5m","15m","30m","1h","2h","4h","6h","12h","1d","1w").contains(tf))
+                    throw new IllegalArgumentException("invalid_timeframe");
+                chart.put("timeframe",tf);
+                break;
+            }
+            case "set_profile": {
+                String profile=args.optString("profile","");
+                if(!java.util.Arrays.asList("SCALP","INTRADAY","SWING").contains(profile))
+                    throw new IllegalArgumentException("invalid_profile");
+                chart.put("profile",profile);
+                chart.put("timeframe",profile.equals("SCALP")?"5m":profile.equals("SWING")?"4h":"15m");
+                break;
+            }
+            case "set_indicators":{
+                JSONObject ind=args.optJSONObject("indicators");
+                if(ind==null||ind.toString().length()>1500)throw new IllegalArgumentException("invalid_indicators");
+                // ChartIndicatorConfig validates ranges internally.
+                chart.put("indicators",ind);
+                break;
+            }
+            case "zoom_in": viewport.put("visibleCount",Math.max(12,viewport.optInt("visibleCount",100)-20));break;
+            case "zoom_out": viewport.put("visibleCount",Math.min(600,viewport.optInt("visibleCount",100)+20));break;
+            case "pan_left": viewport.put("offsetFromEnd",Math.min(10000,viewport.optInt("offsetFromEnd",0)+args.optInt("candles",20)));break;
+            case "pan_right": viewport.put("offsetFromEnd",Math.max(0,viewport.optInt("offsetFromEnd",0)-args.optInt("candles",20)));break;
+            case "go_to_latest": viewport.put("offsetFromEnd",0);break;
+            case "set_auto_scale": viewport.put("autoScale",args.optBoolean("enabled",true));break;
+            default:throw new IllegalArgumentException("chart_action_not_allowed");
+        }
+        chart.put("viewport",viewport);
+        store.save(ChartSessionState.Companion.fromJson(chart));
+        return new JSONObject().put("ok",true).put("action",action)
+                .put("saved_chart_state",chart)
+                .put("note","Le graphique en cours d'affichage peut nécessiter sa réouverture pour appliquer les paramètres.");
     }
 
     private static SharedPreferences prefs(Context context) {
