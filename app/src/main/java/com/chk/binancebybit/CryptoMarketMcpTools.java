@@ -9,7 +9,6 @@ import java.net.HttpURLConnection;
 import java.net.URL;
 import java.util.ArrayList;
 import java.util.Collections;
-import java.util.Comparator;
 import java.util.List;
 import java.util.Locale;
 
@@ -103,7 +102,7 @@ public final class CryptoMarketMcpTools {
 
     private static String symbol(JSONObject args) {
         String s = args.optString("symbol", "").trim().toUpperCase(Locale.ROOT);
-        if (!s.matches("^[A-Z0-9]{2,24}USDC$") || "USDCUSDC".equals(s))
+        if (!s.matches("^[A-Z0-9]{1,24}USDC$") || "USDCUSDC".equals(s))
             throw new IllegalArgumentException("symbol_must_be_spot_USDC");
         return s;
     }
