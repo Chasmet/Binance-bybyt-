@@ -32,6 +32,24 @@ public final class CryptoUniversalAgent {
     private static final Object LOCK = new Object();
     private CryptoUniversalAgent() {}
 
+    public static boolean enabled(Context context) {
+        return prefs(context).getBoolean("active", false);
+    }
+
+    public static void setEnabled(Context context, boolean enabled) {
+        prefs(context).edit().putBoolean("active", enabled).apply();
+        if (enabled) {
+            scheduleBackground(context);
+            start(context);
+        } else {
+            JobScheduler scheduler=(JobScheduler)context.getSystemService(Context.JOB_SCHEDULER_SERVICE);
+            if(scheduler!=null)scheduler.cancel(9861);
+            synchronized (LOCK) {
+                if(worker!=null){worker.shutdownNow();worker=null;}
+            }
+        }
+    }
+
     public static boolean paired(Context context) {
         return !prefs(context).getString(APP_ID, "").isEmpty()
             && !new SecureStore(context).get(SECRET).isEmpty();
