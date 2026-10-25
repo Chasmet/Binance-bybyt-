@@ -59,6 +59,8 @@
             android:screenOrientation="portrait"
             android:theme="@android:style/Theme.Material.NoActionBar" />
 
+        <activity android:name=".CryptoFileWorkspaceActivity" android:exported="false" />
+
         <activity
             android:name=".CryptoUniversalActivity"
             android:exported="false"
