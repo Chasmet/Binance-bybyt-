@@ -87,6 +87,11 @@
             android:theme="@android:style/Theme.Material.NoActionBar" />
 
         <activity
+            android:name=".CryptoUniversalActivity"
+            android:exported="false"
+            android:screenOrientation="portrait" />
+
+        <activity
             android:name=".BackupActivity"
             android:exported="false"
             android:screenOrientation="portrait" />
