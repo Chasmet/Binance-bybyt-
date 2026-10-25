@@ -680,6 +680,13 @@ class MainActivityV4 : Activity() {
         val stateKey = if (isBinance) "binance_sync_state" else "bybit_sync_state"
         val state = prefs.getString(stateKey, "Jamais synchronisé") ?: "Jamais synchronisé"
         page.addView(infoBanner("État de connexion", state, if (state.startsWith("OK")) green else muted))
+        page.addView(subTitle("Serveur MCP personnel"))
+        page.addView(infoBanner("CHK Crypto Analyse 2",
+            "Appairage avec ton serveur universel sur PC. Le serveur analyse les paires Spot Bybit et les graphiques; les clés API restent sur Android.",
+            blue))
+        page.addView(primaryButton("Configurer CHK Crypto Analyse 2") {
+            startActivity(Intent(this, CryptoUniversalActivity::class.java))
+        })
         page.addView(subTitle("Protection de l'application"))
         page.addView(settingRow("Clés API", "Chiffrées localement avec Android Keystore", "ACTIF"))
         page.addView(settingRow("Retraits", "Aucune fonction de retrait dans l'application", "BLOQUÉ"))
