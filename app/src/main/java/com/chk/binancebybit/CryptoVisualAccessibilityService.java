@@ -11,7 +11,6 @@ import android.os.Build;
 import android.os.Handler;
 import android.os.Looper;
 import android.provider.Settings;
-import android.text.TextUtils;
 import android.util.Base64;
 import android.view.Display;
 import android.view.accessibility.AccessibilityEvent;
@@ -65,6 +64,7 @@ public final class CryptoVisualAccessibilityService extends AccessibilityService
         if (!optedIn(context) || !CryptoUniversalAgent.isEnabled(context))
             return output.put("ok", false).put("error", "visual_control_disabled_in_settings");
         if (service == null) return output.put("ok", false).put("error", "accessibility_service_not_connected");
+        if ("ui_capture".equals(action)) return service.captureOnWorker();
         if (args == null) args = new JSONObject();
         JSONObject safeArgs = args;
         final AtomicReference<JSONObject> ref = new AtomicReference<>();
@@ -90,7 +90,6 @@ public final class CryptoVisualAccessibilityService extends AccessibilityService
             return out.put("ok", false).put("error", "open_chk_crypto_on_phone_first");
         try {
             if ("ui_inspect".equals(action)) return inspect(root);
-            if ("ui_capture".equals(action)) return capture(root);
             if ("ui_back".equals(action))
                 return out.put("ok", performGlobalAction(GLOBAL_ACTION_BACK));
             if ("ui_click".equals(action)) {
@@ -240,37 +239,59 @@ public final class CryptoVisualAccessibilityService extends AccessibilityService
         return s.length() > len ? s.substring(0, len) : s;
     }
 
-    private JSONObject capture(AccessibilityNodeInfo root) throws Exception {
-        JSONObject output = new JSONObject().put("type", "image/jpeg")
+    /** Capture stays asynchronous on the main thread and waits on the MCP worker.
+     * A successful result is returned only AFTER the JPEG has been generated.
+     */
+    private JSONObject captureOnWorker() throws Exception {
+        JSONObject out = new JSONObject().put("action", "ui_capture")
                 .put("observedAt", System.currentTimeMillis());
-        if (Build.VERSION.SDK_INT < 30) return output.put("ok", false).put("error", "android_11_required_for_visual_capture");
-        if (isProtectedScreen(root)) return output.put("ok", false).put("error", "sensitive_screen_capture_blocked");
-        // Async Android screenshot; code continues after callback. No clipboard or file storage.
-        takeScreenshot(Display.DEFAULT_DISPLAY, main::post, new TakeScreenshotCallback() {
-            @Override public void onSuccess(ScreenshotResult screenshot) {
-                try (HardwareBuffer buffer = screenshot.getHardwareBuffer()) {
-                    Bitmap hw = Bitmap.wrapHardwareBuffer(buffer, screenshot.getColorSpace());
-                    if (hw == null) throw new IllegalStateException("hardware_bitmap_unavailable");
-                    int w = hw.getWidth(), h = hw.getHeight();
-                    double ratio = Math.min(1.0, Math.min(680.0 / w, 1100.0 / h));
-                    Bitmap scaled = Bitmap.createScaledBitmap(hw, Math.max(1, (int)(w * ratio)),
-                            Math.max(1, (int)(h * ratio)), true);
-                    ByteArrayOutputStream bytes = new ByteArrayOutputStream();
-                    scaled.compress(Bitmap.CompressFormat.JPEG, 40, bytes);
-                    if (scaled != hw) scaled.recycle();
-                    if (bytes.size() > 240000) throw new IllegalStateException("capture_too_large");
-                    output.put("ok", true).put("width", w).put("height", h)
-                            .put("jpegBase64", Base64.encodeToString(bytes.toByteArray(), Base64.NO_WRAP));
-                } catch (Exception e) {
-                    try { output.put("ok", false).put("error", "capture_failed"); } catch (Exception ignored) {}
-                }
-            }
-            @Override public void onFailure(int code) {
-                try { output.put("ok", false).put("error", "android_screenshot_error_" + code); }
-                catch (Exception ignored) {}
-            }
+        if (Build.VERSION.SDK_INT < 30)
+            return out.put("ok", false).put("error", "android_11_required");
+        CountDownLatch latch = new CountDownLatch(1);
+        AtomicReference<JSONObject> response = new AtomicReference<>();
+        main.post(() -> {
+            AccessibilityNodeInfo root = getRootInActiveWindow();
+            try {
+                if (root == null || !getPackageName().contentEquals(String.valueOf(root.getPackageName())))
+                    throw new IllegalStateException("open_chk_crypto_first");
+                if (isProtectedScreen(root)) throw new SecurityException("sensitive_screen_capture_blocked");
+                takeScreenshot(Display.DEFAULT_DISPLAY, main::post, new TakeScreenshotCallback() {
+                    @Override public void onSuccess(ScreenshotResult screenshot) {
+                        try (HardwareBuffer buffer = screenshot.getHardwareBuffer()) {
+                            Bitmap hw = Bitmap.wrapHardwareBuffer(buffer, screenshot.getColorSpace());
+                            if (hw == null) throw new IllegalStateException("hardware_bitmap_unavailable");
+                            int w = hw.getWidth(), h = hw.getHeight();
+                            double ratio = Math.min(1.0, Math.min(680.0 / w, 1100.0 / h));
+                            Bitmap scaled = Bitmap.createScaledBitmap(hw, Math.max(1, (int)(w * ratio)),
+                                    Math.max(1, (int)(h * ratio)), true);
+                            ByteArrayOutputStream bytes = new ByteArrayOutputStream();
+                            scaled.compress(Bitmap.CompressFormat.JPEG, 32, bytes);
+                            if (scaled != hw) scaled.recycle();
+                            if (bytes.size() > 180000) throw new IllegalStateException("capture_too_large");
+                            response.set(new JSONObject().put("ok", true).put("type", "image/jpeg")
+                                    .put("width", scaled.getWidth()).put("height", scaled.getHeight())
+                                    .put("jpegBase64", Base64.encodeToString(bytes.toByteArray(), Base64.NO_WRAP)));
+                        } catch (Exception e) {
+                            response.set(error("capture_failed"));
+                        } finally { latch.countDown(); }
+                    }
+                    @Override public void onFailure(int code) {
+                        response.set(error("android_screenshot_error_" + code));
+                        latch.countDown();
+                    }
+                });
+            } catch (Exception e) {
+                response.set(error(String.valueOf(e.getMessage())));
+                latch.countDown();
+            } finally { if (root != null) root.recycle(); }
         });
-        return output.put("ok", true).put("pending", true)
-                .put("note", "Screenshot is asynchronous; final image is delivered in the callback.");
+        if (!latch.await(8, TimeUnit.SECONDS))
+            return out.put("ok", false).put("error", "capture_timeout");
+        return response.get() == null ? out.put("ok", false).put("error", "no_capture") : response.get();
+    }
+
+    private static JSONObject error(String message) {
+        try { return new JSONObject().put("ok", false).put("error", message); }
+        catch (Exception ignored) { return new JSONObject(); }
     }
 }
