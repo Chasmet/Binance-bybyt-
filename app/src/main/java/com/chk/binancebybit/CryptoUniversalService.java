@@ -38,17 +38,25 @@ public final class CryptoUniversalService extends Service {
                 Thread t=new Thread(r,"CHK-Universal-Crypto-Reader");
                 t.setDaemon(true);return t;
             });
-            scheduler.scheduleWithFixedDelay(() -> {
-                try {
-                    if (!CryptoUniversalAgent.isEnabled(getApplicationContext())) {
-                        stopSelf();return;
+            scheduler.scheduleWithFixedDelay(new Runnable() {
+                private long lastPassivePoll = 0;
+                @Override public void run() {
+                    try {
+                        if (!CryptoUniversalAgent.isEnabled(getApplicationContext())) {
+                            stopSelf(); return;
+                        }
+                        boolean visual = CryptoVisualAccessibilityService.optedIn(getApplicationContext())
+                                && CryptoVisualAccessibilityService.granted(getApplicationContext());
+                        long now = System.currentTimeMillis();
+                        if (!visual && now - lastPassivePoll < 60000) return;
+                        lastPassivePoll = now;
+                        if (!isInternetAvailable()) return;
+                        CryptoUniversalAgent.pollOnce(getApplicationContext());
+                    } catch (Exception e) {
+                        CryptoUniversalAgent.recordFailure(getApplicationContext(),e);
                     }
-                    if (!isInternetAvailable()) return;
-                    CryptoUniversalAgent.pollOnce(getApplicationContext());
-                } catch (Exception e) {
-                    CryptoUniversalAgent.recordFailure(getApplicationContext(),e);
                 }
-            },0,60,TimeUnit.SECONDS);
+            },0,3,TimeUnit.SECONDS);
         }
         return START_STICKY;
     }
@@ -70,7 +78,9 @@ public final class CryptoUniversalService extends Service {
                 ?new Notification.Builder(this,CHANNEL):new Notification.Builder(this);
         return b.setSmallIcon(R.drawable.app_icon)
                 .setContentTitle("CHK Crypto Analyse 2")
-                .setContentText("Suivi MCP en lecture seule • serveur personnel")
+                .setContentText(CryptoVisualAccessibilityService.optedIn(this)
+                        ? "Contrôle visuel CHK actif • interrompre dans Réglages"
+                        : "Surveillance MCP • serveur personnel")
                 .setContentIntent(open).setOngoing(true).setOnlyAlertOnce(true)
                 .setPriority(Notification.PRIORITY_LOW).build();
     }
