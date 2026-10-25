@@ -67,7 +67,13 @@ public final class CryptoUniversalAgent {
                 .put(new JSONObject().put("name", "portfolio_snapshot").put("readOnly", true)
                         .put("description", "Lecture des derniers portefeuilles locaux, sans clés API"))
                 .put(new JSONObject().put("name", "tracking_status").put("readOnly", true)
-                        .put("description", "État du Tracking local Binance et Bybit, sans trading"));
+                        .put("description", "État du Tracking local Binance et Bybit, sans trading"))
+                .put(new JSONObject().put("name", "app_diagnostics").put("readOnly", true)
+                        .put("description", "Version Android, liaison MCP, état réseau"))
+                .put(new JSONObject().put("name", "market_watch_status").put("readOnly", true)
+                        .put("description", "État des alertes, du Bot et de la surveillance"))
+                .put(new JSONObject().put("name", "bot_rules_summary").put("readOnly", true)
+                        .put("description", "Comptage des règles Bot CHK, sans exécution"));
         JSONObject registration = request("POST", "/api/apps",
                 new JSONObject().put("name", APP_NAME).put("capabilities", abilities), ownerToken);
         String id = registration.getString("id");
@@ -107,6 +113,15 @@ public final class CryptoUniversalAgent {
                     break;
                 case "tracking_status":
                     result = trackingStatus(context);
+                    break;
+                case "app_diagnostics":
+                    result = appDiagnostics(context);
+                    break;
+                case "market_watch_status":
+                    result = marketWatchStatus(context);
+                    break;
+                case "bot_rules_summary":
+                    result = botRulesSummary(context);
                     break;
                 default:
                     result = new JSONObject().put("ok", false).put("error", "crypto_action_forbidden");
@@ -171,8 +186,52 @@ public final class CryptoUniversalAgent {
                 .put("observedAt", System.currentTimeMillis());
     }
 
+    public static void testConnection(Context context) throws Exception {
+        JSONObject health = request("GET", "/health", null, null);
+        if (!"ok".equals(health.optString("status")))
+            throw new IllegalStateException("Le serveur universel n'est pas prêt.");
+        prefs(context).edit().putLong("last_check_ms", System.currentTimeMillis())
+                .remove("last_error").apply();
+    }
+
+    private static JSONObject appDiagnostics(Context context) throws Exception {
+        String version;
+        try {
+            version = context.getPackageManager().getPackageInfo(context.getPackageName(), 0).versionName;
+        } catch (Exception e) {version="unknown";}
+        return new JSONObject().put("ok", true).put("readOnly", true)
+                .put("application", "CHK Crypto").put("packageName", context.getPackageName())
+                .put("version", version).put("androidApi", android.os.Build.VERSION.SDK_INT)
+                .put("paired", isPaired(context)).put("workerEnabled", isEnabled(context))
+                .put("lastPollAt", prefs(context).getLong("last_poll_ms", 0))
+                .put("observedAt", System.currentTimeMillis());
+    }
+
+    private static JSONObject marketWatchStatus(Context context) throws Exception {
+        LocalAlertStore alerts = new LocalAlertStore(context);
+        BotRuleStore bot = new BotRuleStore(context);
+        AutoTradePolicyStore trade = new AutoTradePolicyStore(context);
+        return new JSONObject().put("ok", true).put("readOnly", true)
+                .put("alertMonitorEnabled", alerts.monitoringEnabled())
+                .put("activeAlertCount", alerts.activeCount())
+                .put("botEnabled", bot.enabled())
+                .put("activeBotRuleCount", bot.activeCount())
+                .put("autoTradeEnabled", trade.enabled())
+                .put("universalMcpWorkerEnabled", isEnabled(context))
+                .put("lastObservedAt", System.currentTimeMillis());
+    }
+
+    private static JSONObject botRulesSummary(Context context) throws Exception {
+        BotRuleStore bot = new BotRuleStore(context);
+        return new JSONObject().put("ok", true).put("readOnly", true)
+                .put("botEnabled", bot.enabled()).put("activeRuleCount", bot.activeCount())
+                .put("totalRules", bot.list().size())
+                .put("tradingActionsPermitted", false)
+                .put("observedAt", System.currentTimeMillis());
+    }
+
     private static JSONObject request(String method, String path, JSONObject body, String bearer) throws Exception {
-        if (!path.startsWith("/api/") || path.contains("..") || path.contains("?"))
+        if (!(path.equals("/health") || path.startsWith("/api/")) || path.contains("..") || path.contains("?"))
             throw new SecurityException("Chemin MCP Android interdit.");
         HttpURLConnection conn = (HttpURLConnection) new URL(BASE_URL + path).openConnection();
         conn.setRequestMethod(method);
