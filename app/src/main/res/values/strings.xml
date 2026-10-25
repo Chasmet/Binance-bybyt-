@@ -1,0 +1,4 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="chk_visual_accessibility_description">Contrôle visuel CHK Crypto sur demande : lire les écrans de CHK, capturer une image, effectuer des gestes et saisir du texte dans CHK. Ce service ne contrôle pas les autres applications. Activation et désactivation dans les réglages Android et CHK Crypto.</string>
+</resources>

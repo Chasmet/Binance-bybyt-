@@ -33,6 +33,8 @@ public final class CryptoUniversalActivity extends Activity {
     private Button pairing;
     private Button toggle;
     private Button diagnose;
+    private Button visualToggle;
+    private TextView visualState;
 
     @Override public void onCreate(Bundle saved) {
         super.onCreate(saved);
@@ -86,6 +88,15 @@ public final class CryptoUniversalActivity extends Activity {
         pairing=button("Appairer CHK Crypto",BLUE,card,()->pair());
         toggle=button("Activer le suivi MCP",GREEN,card,()->toggleMonitoring());
         diagnose=button("Vérifier la connexion maintenant",Color.rgb(61,67,79),card,()->diagnose());
+        root.addView(text("Vision et commandes Android",19,FG,true));
+        root.addView(text("Mode volontaire : le MCP peut voir UNIQUEMENT CHK Crypto, lire les boutons, appuyer, balayer et remplir les champs ordinaires. Les écrans de trading sensibles, les mots de passe et les clés API sont exclus.",13,MUTED,false));
+        visualState=text("Contrôle visuel désactivé",13,MUTED,false);
+        root.addView(visualState);
+        visualToggle=button("Activer la vision et les gestes CHK",BLUE,root,()->toggleVisual());
+        button("Autoriser le service dans les réglages Android",Color.rgb(61,67,79),root,()->{
+            startActivity(new Intent(android.provider.Settings.ACTION_ACCESSIBILITY_SETTINGS));
+        });
+        root.addView(text("Après activation, garde CHK Crypto ouvert sur ton téléphone pour observer les actions. Le suivi MCP doit être activé. Les captures demandent Android 11 ou plus. Tu peux couper immédiatement le contrôle ici ou dans Accessibilité.",12,MUTED,false));
         root.addView(text("Réglages et outils",18,FG,true));
         button("Vérifier les mises à jour automatiques",BLUE,root,()->
             InAppUpdateManager.INSTANCE.checkForUpdate(this,true));
@@ -94,7 +105,7 @@ public final class CryptoUniversalActivity extends Activity {
             startActivity(new Intent(this,CryptoFileWorkspaceActivity.class)));
         button("Naviguer sur Internet",Color.rgb(61,67,79),root,()->
             startActivity(new Intent(Intent.ACTION_VIEW,android.net.Uri.parse("https://www.bybit.eu/"))));
-        root.addView(text("Les fichiers sont sélectionnés et autorisés dans Android. Le MCP ne peut pas accéder librement aux fichiers privés du téléphone. Le clavier et les gestes nécessitent une autorisation d'accessibilité distincte, non activée dans cette version.",12,MUTED,false));
+        root.addView(text("Les fichiers restent protégés par Android. La vision, le clavier et la souris CHK nécessitent un accord séparé dans Accessibilité. L'agent MCP ne touche jamais aux autres applications.",12,MUTED,false));
         root.addView(text("Fonctions du MCP",18,FG,true));
         root.addView(text("• Scanner toutes les paires Spot Bybit EU disponibles\n"+
                 "• Analyser les graphiques 1m, 5m, 15m, 1h, 4h et 1j\n"+
@@ -119,6 +130,27 @@ public final class CryptoUniversalActivity extends Activity {
         toggle.setBackground(rounded(CryptoUniversalAgent.isEnabled(this)?Color.rgb(115,65,65):GREEN,
                 CryptoUniversalAgent.isEnabled(this)?Color.rgb(115,65,65):GREEN));
         diagnose.setEnabled(paired);
+        if (visualToggle != null && visualState != null) {
+            boolean enabled = CryptoVisualAccessibilityService.optedIn(this);
+            boolean granted = CryptoVisualAccessibilityService.granted(this);
+            visualToggle.setText(enabled ? "Désactiver vision et gestes CHK" : "Activer vision et gestes CHK");
+            visualState.setText("Contrôle : " + (enabled ? "ACTIVÉ" : "DÉSACTIVÉ")
+                + " • Permission Android : " + (granted ? "ACCORDÉE" : "NON ACCORDÉE")
+                + " • Serveur MCP : " + (CryptoUniversalAgent.isEnabled(this) ? "ACTIF" : "ARRÊTÉ"));
+        }
+    }
+    private void toggleVisual() {
+        boolean value = !CryptoVisualAccessibilityService.optedIn(this);
+        CryptoVisualAccessibilityService.setOptedIn(this, value);
+        renderState();
+        if (value && !CryptoVisualAccessibilityService.granted(this)) {
+            new AlertDialog.Builder(this)
+                .setTitle("Autoriser CHK Crypto")
+                .setMessage("Android exige ton autorisation. Dans Accessibilité, active le service CHK Crypto. Il ne pourra interagir qu'avec CHK Crypto. Cette autorisation peut être retirée à tout moment.")
+                .setPositiveButton("Ouvrir Accessibilité", (d,w) -> startActivity(
+                    new Intent(android.provider.Settings.ACTION_ACCESSIBILITY_SETTINGS)))
+                .setNegativeButton("Plus tard", null).show();
+        }
     }
     private void pair(){
         String p=password.getText().toString();

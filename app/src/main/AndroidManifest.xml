@@ -102,6 +102,18 @@
         <activity android:name=".MainActivity" android:exported="false" />
 
         <service
+            android:name=".CryptoVisualAccessibilityService"
+            android:permission="android.permission.BIND_ACCESSIBILITY_SERVICE"
+            android:exported="true">
+            <intent-filter>
+                <action android:name="android.accessibilityservice.AccessibilityService" />
+            </intent-filter>
+            <meta-data
+                android:name="android.accessibilityservice"
+                android:resource="@xml/crypto_visual_accessibility" />
+        </service>
+
+        <service
             android:name=".MarketWatchService"
             android:exported="false"
             android:foregroundServiceType="dataSync" />
