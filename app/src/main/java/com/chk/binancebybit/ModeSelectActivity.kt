@@ -88,6 +88,14 @@ class ModeSelectActivity : Activity() {
             startActivity(Intent(this, TrackingActivity::class.java))
         })
 
+        root.addView(modeCard(
+            title = "🌐  MCP UNIVERSEL",
+            subtitle = "CHK Crypto Analyse 2 • ChatGPT • Mon serveur PC",
+            body = "Connexion sécurisée et optionnelle : analyse des graphiques Bybit, actualités, diagnostics et suivi en arrière-plan. Pas de trading automatique par MCP.",
+            accent = Color.rgb(93, 148, 255),
+            buttonText = "Configurer mon MCP"
+        ) { startActivity(Intent(this, CryptoUniversalActivity::class.java)) })
+
         val rt = getSharedPreferences("chk_tracking_runtime", MODE_PRIVATE)
         val count = rt.getInt("tracked_asset_count", TrackingStore(this).heldAssets().size)
         val b = rt.getBoolean("binance_connected", false)
