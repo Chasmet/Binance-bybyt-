@@ -107,6 +107,8 @@ class UpdateCenterActivity : Activity() {
             addView(latestValue)
         })
 
+        root.addView(CryptoUpdatePreferencesView(this))
+
         root.addView(card().apply {
             addView(TextView(this@UpdateCenterActivity).apply {
                 text = "État"

@@ -86,6 +86,15 @@ public final class CryptoUniversalActivity extends Activity {
         pairing=button("Appairer CHK Crypto",BLUE,card,()->pair());
         toggle=button("Activer le suivi MCP",GREEN,card,()->toggleMonitoring());
         diagnose=button("Vérifier la connexion maintenant",Color.rgb(61,67,79),card,()->diagnose());
+        root.addView(text("Réglages et outils",18,FG,true));
+        button("Vérifier les mises à jour automatiques",BLUE,root,()->
+            InAppUpdateManager.INSTANCE.checkForUpdate(this,true));
+        root.addView(text("Vérification GitHub depuis l'application. L'installation d'une nouvelle version demande confirmation Android et conserve les données si la signature est identique.",12,MUTED,false));
+        button("Fichiers : lire • importer • exporter",Color.rgb(61,67,79),root,()->
+            startActivity(new Intent(this,CryptoFileWorkspaceActivity.class)));
+        button("Naviguer sur Internet",Color.rgb(61,67,79),root,()->
+            startActivity(new Intent(Intent.ACTION_VIEW,android.net.Uri.parse("https://www.bybit.eu/"))));
+        root.addView(text("Les fichiers sont sélectionnés et autorisés dans Android. Le MCP ne peut pas accéder librement aux fichiers privés du téléphone. Le clavier et les gestes nécessitent une autorisation d'accessibilité distincte, non activée dans cette version.",12,MUTED,false));
         root.addView(text("Fonctions du MCP",18,FG,true));
         root.addView(text("• Scanner toutes les paires Spot Bybit EU disponibles\n"+
                 "• Analyser les graphiques 1m, 5m, 15m, 1h, 4h et 1j\n"+

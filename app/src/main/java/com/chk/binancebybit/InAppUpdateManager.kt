@@ -71,6 +71,23 @@ object InAppUpdateManager {
         val message: String
     )
 
+    /** Automatic checks are on by default; automatic downloads are opt-in. */
+    fun autoCheckEnabled(context: Context): Boolean =
+        context.getSharedPreferences(PREFS, Context.MODE_PRIVATE).getBoolean("auto_check_enabled", true)
+
+    fun setAutoCheckEnabled(context: Context, value: Boolean) {
+        context.getSharedPreferences(PREFS, Context.MODE_PRIVATE).edit()
+            .putBoolean("auto_check_enabled", value).apply()
+    }
+
+    fun autoDownloadEnabled(context: Context): Boolean =
+        context.getSharedPreferences(PREFS, Context.MODE_PRIVATE).getBoolean("auto_download_enabled", false)
+
+    fun setAutoDownloadEnabled(context: Context, value: Boolean) {
+        context.getSharedPreferences(PREFS, Context.MODE_PRIVATE).edit()
+            .putBoolean("auto_download_enabled", value).apply()
+    }
+
     fun install(app: Application) {
         if (!installed.compareAndSet(false, true)) return
         createNotificationChannel(app)
@@ -80,7 +97,7 @@ object InAppUpdateManager {
                 cleanupAfterSuccessfulUpdate(activity)
                 if (downloadReady(activity)) {
                     showReadyDialog(activity)
-                } else {
+                } else if (autoCheckEnabled(activity)) {
                     checkForUpdate(activity, force = false)
                 }
             }
@@ -179,6 +196,14 @@ object InAppUpdateManager {
                     val available = latest.isNotBlank() && apkUrl.isNotBlank() && compareVersions(latest, installedVersion) > 0
                     val release = if (available) ReleaseInfo(latest, apkUrl, notes) else null
                     result = CheckResult(installedVersion, release, available, null)
+                    if (available && release != null && autoDownloadEnabled(activity)
+                        && prefs.getString("download_version", "") != release.version) {
+                        runCatching { startBackgroundDownload(activity.applicationContext, release) }
+                            .onFailure {
+                                prefs.edit().putString("last_error",
+                                    "Téléchargement automatique impossible : ${it.message ?: "réseau"}").apply()
+                            }
+                    }
                     if (!available) {
                         if (force && showDialog) showToast(activity, "CHK Crypto est déjà à jour")
                     } else if (showDialog) {

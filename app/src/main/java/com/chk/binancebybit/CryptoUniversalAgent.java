@@ -73,7 +73,21 @@ public final class CryptoUniversalAgent {
                 .put(new JSONObject().put("name", "market_watch_status").put("readOnly", true)
                         .put("description", "État des alertes, du Bot et de la surveillance"))
                 .put(new JSONObject().put("name", "bot_rules_summary").put("readOnly", true)
-                        .put("description", "Comptage des règles Bot CHK, sans exécution"));
+                        .put("description", "Comptage des règles Bot CHK, sans exécution"))
+                .put(new JSONObject().put("name", "bybit_spot_universe").put("readOnly", true)
+                        .put("description", "Toutes les paires Bybit EU Spot USDC actives, sans pagination Spot"))
+                .put(new JSONObject().put("name", "bybit_spot_tickers").put("readOnly", true)
+                        .put("description", "Prix, volume, spread et variations des paires Spot USDC"))
+                .put(new JSONObject().put("name", "bybit_market_scan").put("readOnly", true)
+                        .put("description", "Scanner toutes les paires Bybit EU Spot USDC classées par volume 24h"))
+                .put(new JSONObject().put("name", "bybit_kline").put("readOnly", true)
+                        .put("description", "Bougies Spot USDC; args symbol, interval=1/5/15/60/240/D, limit<=200"))
+                .put(new JSONObject().put("name", "bybit_orderbook").put("readOnly", true)
+                        .put("description", "Carnet Bybit EU Spot USDC top 25; args symbol"))
+                .put(new JSONObject().put("name", "bybit_indicators").put("readOnly", true)
+                        .put("description", "RSI, EMA, MACD, ATR, Bollinger depuis bougies clôturées; args symbol, interval"))
+                .put(new JSONObject().put("name", "bybit_exchange_time").put("readOnly", true)
+                        .put("description", "Horloge publique de la plateforme Bybit EU"));
         JSONObject registration = request("POST", "/api/apps",
                 new JSONObject().put("name", APP_NAME).put("capabilities", abilities), ownerToken);
         String id = registration.getString("id");
@@ -107,7 +121,18 @@ public final class CryptoUniversalAgent {
         String action = task.optString("action");
         JSONObject result;
         try {
+            JSONObject taskArgs = task.optJSONObject("args");
+            if (taskArgs == null) taskArgs = task.optJSONObject("arguments");
             switch (action) {
+                case "bybit_spot_universe":
+                case "bybit_spot_tickers":
+                case "bybit_market_scan":
+                case "bybit_kline":
+                case "bybit_orderbook":
+                case "bybit_indicators":
+                case "bybit_exchange_time":
+                    result = CryptoMarketMcpTools.execute(action, taskArgs);
+                    break;
                 case "portfolio_snapshot":
                     result = portfolioSnapshot(context);
                     break;
