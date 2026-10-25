@@ -25,6 +25,10 @@ class ChartFullscreenActivity : Activity() {
     private val main = Handler(Looper.getMainLooper())
     private val executor = Executors.newFixedThreadPool(2)
     private val running = AtomicBoolean(true)
+    private val universalChartPrefs by lazy { getSharedPreferences("chk_chart_preferences_v2", MODE_PRIVATE) }
+    private val universalChartListener = android.content.SharedPreferences.OnSharedPreferenceChangeListener { _, key ->
+        if (key == "current_chart_state") main.post { applyUniversalChartState() }
+    }
     private lateinit var chart: CandlestickChartView
     private lateinit var status: TextView
     private lateinit var timeframes: HorizontalScrollView
@@ -90,9 +94,11 @@ class ChartFullscreenActivity : Activity() {
         main.removeCallbacks(commandLoop)
         main.postDelayed(refreshLoop, 12_000L)
         main.post(commandLoop)
+        universalChartPrefs.registerOnSharedPreferenceChangeListener(universalChartListener)
     }
 
     override fun onPause() {
+        universalChartPrefs.unregisterOnSharedPreferenceChangeListener(universalChartListener)
         running.set(false)
         main.removeCallbacks(refreshLoop)
         main.removeCallbacks(commandLoop)
@@ -217,6 +223,27 @@ class ChartFullscreenActivity : Activity() {
         saveState()
         executor.execute { runCatching { remote.ack(rc.seq) } }
         if (reload) refresh(true) else schedulePush(true)
+    }
+
+    /**
+     * CHK Universal MCP controls are written through the same chart state
+     * store. Apply these preferences to the actual visible chart, not just
+     * to an unrelated server-side representation.
+     */
+    private fun applyUniversalChartState() {
+        if (!running.get() || !::chart.isInitialized) return
+        val loaded = runCatching { stateStore.loadCurrent() }.getOrNull() ?: return
+        if (loaded.toJson().toString() == state.toJson().toString()) return
+        val needsMarketReload = loaded.symbol != state.symbol || loaded.timeframe != state.timeframe
+        state = loaded
+        chart.setIndicators(loaded.indicators)
+        chart.setDrawings(loaded.drawings)
+        chart.applyViewport(loaded.viewport)
+        updateAutoScale()
+        if (needsMarketReload) {
+            rebuildTimeframes()
+            refresh(true)
+        }
     }
 
     private fun saveState() {

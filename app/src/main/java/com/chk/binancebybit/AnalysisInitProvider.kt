@@ -16,6 +16,8 @@ class AnalysisInitProvider : ContentProvider() {
         SettingsUpdateInjector.install(app)
         HomeBotInjector.install(app)
         BotEngine.install(app)
+        // Opt-in read-only MCP worker; starts only after secure device pairing.
+        CryptoUniversalAgent.start(app)
         return true
     }
 
