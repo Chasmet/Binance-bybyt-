@@ -52,6 +52,8 @@ public final class CryptoUniversalAgent {
                 "dd/MM HH:mm", java.util.Locale.FRANCE).format(new java.util.Date(seen));
         String error = p.getString("last_error", "");
         if (error != null && !error.isEmpty()) state += "\nDernière erreur : " + error;
+        String caps = p.getString("visual_caps_error", "");
+        if (caps != null && !caps.isEmpty()) state += "\n" + caps;
         return state;
     }
 
@@ -88,6 +90,7 @@ public final class CryptoUniversalAgent {
                         .put("description", "RSI, EMA, MACD, ATR, Bollinger depuis bougies clôturées; args symbol, interval"))
                 .put(new JSONObject().put("name", "bybit_exchange_time").put("readOnly", true)
                         .put("description", "Horloge publique de la plateforme Bybit EU"));
+        addVisualCapabilities(abilities);
         JSONObject registration = request("POST", "/api/apps",
                 new JSONObject().put("name", APP_NAME).put("capabilities", abilities), ownerToken);
         String id = registration.getString("id");
@@ -95,7 +98,38 @@ public final class CryptoUniversalAgent {
         if (!id.matches("^[a-f0-9]{36}$") || !secret.startsWith("chkapp_"))
             throw new IllegalStateException("L'identité Android fournie par le serveur est invalide.");
         new SecureStore(context).put(SECRET_KEY, secret);
-        prefs(context).edit().putString("app_id", id).putString("last_error", "").apply();
+        prefs(context).edit().putString("app_id", id).putString("last_error", "")
+                .putBoolean("caps_visual_v0116", true).apply();
+    }
+
+    /** Uses original app-scoped token. No administrator password or new registration needed. */
+    private static void refreshCapabilitiesIfNeeded(Context context, String id, String secret) {
+        SharedPreferences p = prefs(context);
+        if (p.getBoolean("caps_visual_v0116", false)) return;
+        long now = System.currentTimeMillis();
+        if (now - p.getLong("last_visual_caps_attempt", 0) < 60L * 60 * 1000) return;
+        p.edit().putLong("last_visual_caps_attempt", now).apply();
+        try {
+            JSONArray abilities = new JSONArray();
+            addVisualCapabilities(abilities);
+            request("PUT", "/api/agent/" + id + "/capabilities",
+                    new JSONObject().put("capabilities", abilities), secret);
+            p.edit().putBoolean("caps_visual_v0116", true).remove("visual_caps_error").apply();
+        } catch (Exception e) {
+            // An older PC server will return 404 until updated; existing tools keep working.
+            p.edit().putString("visual_caps_error", "Serveur PC à mettre à jour : " +
+                    String.valueOf(e.getMessage()).substring(0, Math.min(80, String.valueOf(e.getMessage()).length()))).apply();
+        }
+    }
+    private static void addVisualCapabilities(JSONArray abilities) throws Exception {
+        for (String name : new String[]{"ui_status","ui_inspect","ui_capture","ui_click",
+                "ui_tap","ui_long_press","ui_swipe","ui_type","ui_back"}) {
+            boolean read = name.equals("ui_status") || name.equals("ui_inspect") || name.equals("ui_capture");
+            abilities.put(new JSONObject().put("name", name).put("readOnly", read)
+                    .put("description", read
+                            ? "Lecture écran CHK Crypto seulement, autorisation Accessibilité obligatoire"
+                            : "Commande CHK Crypto seulement; approbation MCP et contrôle actif requis"));
+        }
     }
 
     public static void enable(Context context, boolean enabled) {
@@ -111,6 +145,7 @@ public final class CryptoUniversalAgent {
         if (id == null || !id.matches("^[a-f0-9]{36}$") || !secret.startsWith("chkapp_")) {
             throw new IllegalStateException("Identité Android non appairée.");
         }
+        refreshCapabilitiesIfNeeded(context, id, secret);
         JSONObject received = request("GET", "/api/agent/" + id + "/poll", null, secret);
         prefs(context).edit().putLong("last_poll_ms", System.currentTimeMillis())
                 .remove("last_error").apply();
@@ -124,6 +159,17 @@ public final class CryptoUniversalAgent {
             JSONObject taskArgs = task.optJSONObject("args");
             if (taskArgs == null) taskArgs = task.optJSONObject("arguments");
             switch (action) {
+                case "ui_status":
+                case "ui_inspect":
+                case "ui_capture":
+                case "ui_click":
+                case "ui_tap":
+                case "ui_long_press":
+                case "ui_swipe":
+                case "ui_type":
+                case "ui_back":
+                    result = CryptoVisualAccessibilityService.execute(context, action, taskArgs);
+                    break;
                 case "bybit_spot_universe":
                 case "bybit_spot_tickers":
                 case "bybit_market_scan":
