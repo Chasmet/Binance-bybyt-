@@ -18,5 +18,7 @@ class BootReceiver : BroadcastReceiver() {
             runCatching { MarketWatchService.start(app) }
         }
         if (botStore.enabled()) botStore.syncJournalNow()
+        // Reconnect the opt-in read-only MCP worker after reboot or in-place APK update.
+        if (CryptoUniversalAgent.isEnabled(app)) runCatching { CryptoUniversalService.start(app) }
     }
 }
