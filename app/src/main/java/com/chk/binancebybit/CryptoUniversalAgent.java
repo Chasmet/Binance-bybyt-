@@ -151,12 +151,18 @@ public final class CryptoUniversalAgent {
         String action = job.optString("action");
         JSONObject result;
         // An agent cannot execute trades even if a malicious job is enqueued.
-        if ("crypto_portfolio".equals(action)) result = portfolio(context);
-        else if ("crypto_tracking".equals(action)) result = tracking(context);
-        else if ("crypto_chart_state".equals(action)) result = chartState(context);
-        else if ("crypto_device_status".equals(action)) result = deviceStatus(context);
-        else if ("crypto_chart_control".equals(action)) result = chartControl(context,job.optJSONObject("args"));
-        else result = new JSONObject().put("ok", false).put("error", "read_only_action_not_allowed");
+        // A command-specific validation error is acknowledged, not left forever leased.
+        try {
+            if ("crypto_portfolio".equals(action)) result = portfolio(context);
+            else if ("crypto_tracking".equals(action)) result = tracking(context);
+            else if ("crypto_chart_state".equals(action)) result = chartState(context);
+            else if ("crypto_device_status".equals(action)) result = deviceStatus(context);
+            else if ("crypto_chart_control".equals(action)) result = chartControl(context,job.optJSONObject("args"));
+            else result = new JSONObject().put("ok", false).put("error", "action_not_allowed");
+        } catch (Exception e) {
+            result = new JSONObject().put("ok", false).put("error", "command_validation_failed")
+                    .put("detail", e.getClass().getSimpleName());
+        }
         JSONObject reply = new JSONObject().put("task_id", job.optString("id")).put("result", result);
         request("POST", "/api/agent/" + id + "/result", reply, secret);
     }
