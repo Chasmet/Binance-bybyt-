@@ -84,6 +84,39 @@ public final class CryptoUniversalActivity extends Activity {
         card.addView(connection);
         card.addView(text("Accès limité au portefeuille déjà sauvegardé sur le téléphone et à l'état Tracking. Aucune clé Binance/Bybit n'est envoyée. Aucune commande de trading, achat, vente ou annulation.",13,MUTED));
 
+        android.widget.Switch enabled = new android.widget.Switch(this);
+        enabled.setText("Activer le serveur local");
+        enabled.setTextColor(TEXT);
+        enabled.setTextSize(16);
+        enabled.setChecked(CryptoUniversalAgent.enabled(this));
+        enabled.setOnCheckedChangeListener((v,on) -> {
+            CryptoUniversalAgent.setEnabled(this,on);
+            connection.setText(CryptoUniversalAgent.status(this));
+            Toast.makeText(this,on?"Serveur local activé":"Serveur local désactivé",Toast.LENGTH_SHORT).show();
+        });
+        root.addView(enabled);
+        root.addView(text("L'agent n'interroge ton PC que lorsque cette option est activée et que le téléphone a été jumelé.",13,MUTED));
+
+        Button update = button("Mises à jour automatiques • vérifier maintenant");
+        root.addView(update);
+        update.setOnClickListener(v -> {
+            update.setEnabled(false);
+            InAppUpdateManager.INSTANCE.checkForUpdate(this,true);
+            update.postDelayed(() -> update.setEnabled(true),2500);
+        });
+        root.addView(text("L'installation utilise le système GitHub intégré et la signature habituelle de CHK Crypto. Android demandera confirmation avant l'installation.",12,MUTED));
+
+        Button files=button("Fichiers : importer • lire • exporter");
+        root.addView(files);
+        files.setOnClickListener(v->startActivity(new Intent(this,CryptoFileWorkspaceActivity.class)));
+        root.addView(text("Formats pris en charge par le sélecteur Android : PDF, MP3, MP4, images et autres documents. Les fichiers ne sont pas envoyés au serveur sans ton choix.",12,MUTED));
+
+        Button web=button("Ouvrir le navigateur Internet");
+        root.addView(web);
+        web.setOnClickListener(v->startActivity(new Intent(Intent.ACTION_VIEW,
+                android.net.Uri.parse("https://www.bybit.eu/"))));
+        root.addView(text("Les outils Internet et graphiques du MCP sont accessibles après connexion. Le contrôle global du clavier et de l'écran exige une autorisation d'accessibilité séparée ; il n'est pas activé ici.",12,MUTED));
+
         if (!CryptoUniversalAgent.paired(this)) {
             root.addView(text("1. Dans ChatGPT, demande au connecteur CHK Crypto Analyse 2 de créer une invitation via app_invite.\n2. Colle uniquement l'invitation temporaire ci-dessous. Ce n'est pas ton mot de passe administrateur.",14,TEXT));
             EditText invite = new EditText(this);
