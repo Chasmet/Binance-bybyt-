@@ -64,6 +64,12 @@ public final class CryptoUniversalAgent {
                 .put("description", "Etat de la connexion et de l'agent Android"));
         caps.put(new JSONObject().put("name", "crypto_chart_control").put("readOnly", false)
                 .put("description", "Pilotage non financier du graphique soumis à approbation locale"));
+        caps.put(new JSONObject().put("name", "crypto_alerts").put("readOnly", true)
+                .put("description", "Lecture des alertes de prix déjà configurées"));
+        caps.put(new JSONObject().put("name", "crypto_bot_status").put("readOnly", true)
+                .put("description", "Lecture de l'état du bot et des règles locales"));
+        caps.put(new JSONObject().put("name", "crypto_app_status").put("readOnly", true)
+                .put("description", "Version de l'APK et état de connexion Internet"));
         payload.put("capabilities", caps);
         JSONObject result = request("POST", "/api/onboard", payload, "");
         String id = result.optString("id", "");
@@ -158,6 +164,9 @@ public final class CryptoUniversalAgent {
             else if ("crypto_chart_state".equals(action)) result = chartState(context);
             else if ("crypto_device_status".equals(action)) result = deviceStatus(context);
             else if ("crypto_chart_control".equals(action)) result = chartControl(context,job.optJSONObject("args"));
+        else if ("crypto_alerts".equals(action)) result = alerts(context);
+        else if ("crypto_bot_status".equals(action)) result = botStatus(context);
+        else if ("crypto_app_status".equals(action)) result = appStatus(context);
             else result = new JSONObject().put("ok", false).put("error", "action_not_allowed");
         } catch (Exception e) {
             result = new JSONObject().put("ok", false).put("error", "command_validation_failed")
@@ -275,6 +284,63 @@ public final class CryptoUniversalAgent {
         return new JSONObject().put("ok",true).put("action",action)
                 .put("saved_chart_state",chart)
                 .put("note","Le graphique en cours d'affichage peut nécessiter sa réouverture pour appliquer les paramètres.");
+    }
+
+    private static JSONObject alerts(Context context) throws Exception {
+        SharedPreferences p=context.getSharedPreferences("chk_workspace",Context.MODE_PRIVATE);
+        JSONArray raw=new JSONArray(p.getString("local_market_alerts_v1","[]"));
+        JSONArray list=new JSONArray();
+        int enabledCount=0;
+        for(int i=0;i<Math.min(100,raw.length());i++){
+            JSONObject x=raw.optJSONObject(i);
+            if(x==null)continue;
+            boolean enabled=x.optBoolean("enabled",false);
+            if(enabled)enabledCount++;
+            list.put(new JSONObject().put("symbol",x.optString("symbol").replaceAll("[^A-Z0-9]",""))
+                .put("condition",x.optString("condition")).put("targetPrice",x.optDouble("targetPrice"))
+                .put("enabled",enabled).put("lastTriggeredAt",x.optLong("lastTriggeredAt")));
+        }
+        return new JSONObject().put("ok",true).put("read_only",true)
+            .put("source","android_local_alerts").put("total",raw.length())
+            .put("enabled",enabledCount).put("alerts",list);
+    }
+
+    private static JSONObject botStatus(Context context) throws Exception {
+        SharedPreferences p=context.getSharedPreferences("chk_bot_v1",Context.MODE_PRIVATE);
+        JSONArray raw=new JSONArray(p.getString("rules_json","[]"));
+        JSONArray rules=new JSONArray();
+        for(int i=0;i<Math.min(raw.length(),50);i++){
+            JSONObject x=raw.optJSONObject(i);
+            if(x==null)continue;
+            rules.put(new JSONObject().put("name",x.optString("name").substring(0,Math.min(x.optString("name").length(),80)))
+                .put("symbol",x.optString("symbol").replaceAll("[^A-Z0-9]",""))
+                .put("enabled",x.optBoolean("enabled",false))
+                .put("action",x.optString("action").replaceAll("[^A-Z_]","")));
+        }
+        return new JSONObject().put("ok",true).put("read_only",true)
+            .put("source","android_bot_status").put("bot_enabled",p.getBoolean("bot_enabled",false))
+            .put("rules_count",raw.length()).put("rules",rules)
+            .put("trading_actions_executed",0);
+    }
+
+    private static JSONObject appStatus(Context context) throws Exception {
+        android.net.ConnectivityManager cm=(android.net.ConnectivityManager)
+            context.getSystemService(Context.CONNECTIVITY_SERVICE);
+        boolean internet=false;
+        if(cm!=null){
+            android.net.Network network=cm.getActiveNetwork();
+            android.net.NetworkCapabilities nc=network==null?null:cm.getNetworkCapabilities(network);
+            internet=nc!=null&&nc.hasCapability(android.net.NetworkCapabilities.NET_CAPABILITY_INTERNET)
+                &&nc.hasCapability(android.net.NetworkCapabilities.NET_CAPABILITY_VALIDATED);
+        }
+        String version="unknown";
+        try { version=context.getPackageManager().getPackageInfo(context.getPackageName(),0).versionName; }
+        catch(Exception ignored){}
+        return new JSONObject().put("ok",true).put("read_only",true)
+            .put("application","CHK Crypto Android").put("version",version)
+            .put("internet",internet).put("paired",paired(context))
+            .put("agent_status",status(context)).put("checked_at",System.currentTimeMillis())
+            .put("orders_supported",false);
     }
 
     private static SharedPreferences prefs(Context context) {
